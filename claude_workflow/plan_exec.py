@@ -435,22 +435,23 @@ def parse_coverage(output: str) -> float:
 
 def run_tests() -> tuple[bool, float, str]:
     """Corre tests con coverage. Detecta pytest o Jest según el proyecto."""
-    _backend_dir = Path(__file__).resolve().parent.parent / "backend"
+    # Usar el directorio actual (el proyecto que se está mejorando)
+    project_dir = Path.cwd()
 
     # Detectar tipo de proyecto
-    if (_backend_dir / "package.json").exists():
+    if (project_dir / "package.json").exists():
         # Node.js project — usar Jest
         r = subprocess.run(
             ["npx", "jest", "--coverage", "--coverageReporters=text", "--forceExit"],
             capture_output=True, text=True,
-            cwd=str(_backend_dir)
+            cwd=str(project_dir)
         )
     else:
         # Python project — usar pytest
         r = subprocess.run(
             [sys.executable, "-m", "pytest", "tests/", "--cov=.", "--cov-report=term-missing", "-v"],
             capture_output=True, text=True,
-            cwd=str(_backend_dir)
+            cwd=str(project_dir)
         )
 
     output = r.stdout + r.stderr
