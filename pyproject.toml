@@ -12,6 +12,7 @@ dependencies = []
 [project.scripts]
 claude-iterative = "claude_workflow.iterative:main"
 claude-plan-exec  = "claude_workflow.plan_exec:main"
+claude-multi     = "claude_workflow.multi:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["claude_workflow"]
