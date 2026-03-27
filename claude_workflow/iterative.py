@@ -1408,7 +1408,7 @@ def run(
     results["commit"] = ok
 
     # Resumen
-    _print_summary(results, token_store)
+    _print_summary(results, token_store, durations=durations, branch=branch, agents_dir=_agents_dir)
 
     non_coverage = {k: v for k, v in results.items() if k != "coverage"}
     return 0 if all(non_coverage.values()) else 1
