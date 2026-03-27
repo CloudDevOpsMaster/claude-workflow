@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import importlib.util
+import inspect
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -18,7 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from types import ModuleType
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 # Importar utilidades de plan_exec
 from claude_workflow import plan_exec as base
@@ -97,6 +101,115 @@ def _collect_project_context() -> str:
             pass
 
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# Plugin / Hook System
+# ─────────────────────────────────────────────
+
+class HookRunner:
+    """Discover and execute hooks from .claude-workflow-hooks.py file."""
+
+    def __init__(self, repo_root: Path = None):
+        """Initialize hook runner for a repository.
+
+        Args:
+            repo_root: Path to repository root. Defaults to current working directory.
+        """
+        self.repo_root = repo_root or Path.cwd()
+        self.hooks_file = self.repo_root / ".claude-workflow-hooks.py"
+        self.hooks: Dict[str, Callable] = {}
+        self._logger = logging.getLogger(__name__)
+
+    def load(self) -> bool:
+        """Load hooks from .claude-workflow-hooks.py if it exists.
+
+        Returns:
+            True if hooks were loaded, False if file doesn't exist.
+        """
+        if not self.hooks_file.exists():
+            return False
+
+        try:
+            spec = importlib.util.spec_from_file_location("hooks_module", self.hooks_file)
+            if spec is None or spec.loader is None:
+                return False
+
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            # Discover before_phase_N and after_phase_N functions
+            for name in dir(module):
+                if name.startswith(("before_phase_", "after_phase_")):
+                    attr = getattr(module, name)
+                    if callable(attr):
+                        # Validate signature
+                        sig = inspect.signature(attr)
+                        if len(sig.parameters) in (0, 1, 2):  # ctx, ctx+result, or no args
+                            self.hooks[name] = attr
+                            self._logger.debug(f"Discovered hook: {name}")
+
+            return len(self.hooks) > 0
+        except Exception as e:
+            self._logger.error(f"Failed to load hooks from {self.hooks_file}: {e}")
+            return False
+
+    def before(self, phase: int, ctx: Dict[str, Any]) -> bool:
+        """Execute before_phase_N hook if it exists.
+
+        Args:
+            phase: Phase number (0-5)
+            ctx: Context dict with task, branch, phase_name
+
+        Returns:
+            True if successful (or no hook exists), False if hook raised exception
+        """
+        hook_name = f"before_phase_{phase}"
+        if hook_name not in self.hooks:
+            return True
+
+        try:
+            hook = self.hooks[hook_name]
+            sig = inspect.signature(hook)
+            if len(sig.parameters) == 0:
+                hook()
+            else:
+                hook(ctx)
+            self._logger.debug(f"Hook {hook_name} executed successfully")
+            return True
+        except Exception as e:
+            self._logger.error(f"Hook {hook_name} failed: {e}")
+            return False
+
+    def after(self, phase: int, ctx: Dict[str, Any], result: Any) -> bool:
+        """Execute after_phase_N hook if it exists.
+
+        Args:
+            phase: Phase number (0-5)
+            ctx: Context dict with task, branch, phase_name
+            result: Result from the phase
+
+        Returns:
+            True if successful (or no hook exists), False if hook raised exception
+        """
+        hook_name = f"after_phase_{phase}"
+        if hook_name not in self.hooks:
+            return True
+
+        try:
+            hook = self.hooks[hook_name]
+            sig = inspect.signature(hook)
+            if len(sig.parameters) == 0:
+                hook()
+            elif len(sig.parameters) == 1:
+                hook(ctx)
+            else:
+                hook(ctx, result)
+            self._logger.debug(f"Hook {hook_name} executed successfully")
+            return True
+        except Exception as e:
+            self._logger.error(f"Hook {hook_name} failed: {e}")
+            return False
 
 
 # ─────────────────────────────────────────────

@@ -595,5 +595,108 @@ def test_generate_report_md_handles_none_token_store():
         assert "❌ FAIL" in content  # Failed phase should show as FAIL
 
 
+# ─────────────────────────────────────────────
+# Test: HookRunner
+# ─────────────────────────────────────────────
+
+def test_hook_runner_no_hooks_file():
+    """HookRunner.load() returns False if no .claude-workflow-hooks.py exists"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        runner = ci.HookRunner(Path(tmpdir))
+        assert runner.load() is False
+        assert len(runner.hooks) == 0
+
+
+def test_hook_runner_discovers_hooks():
+    """HookRunner discovers before_phase_N and after_phase_N functions"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        hooks_file = Path(tmpdir) / ".claude-workflow-hooks.py"
+        hooks_file.write_text("""
+def before_phase_0(ctx):
+    pass
+
+def after_phase_1(ctx, result):
+    pass
+
+def before_phase_2(ctx):
+    pass
+
+def some_other_function():
+    pass
+""")
+        runner = ci.HookRunner(Path(tmpdir))
+        assert runner.load() is True
+        assert len(runner.hooks) == 3
+        assert "before_phase_0" in runner.hooks
+        assert "after_phase_1" in runner.hooks
+        assert "before_phase_2" in runner.hooks
+        assert "some_other_function" not in runner.hooks
+
+
+def test_hook_runner_before_hook_called():
+    """HookRunner.before() executes the before_phase hook"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        hooks_file = Path(tmpdir) / ".claude-workflow-hooks.py"
+        hooks_file.write_text("""
+hook_called = False
+
+def before_phase_0(ctx):
+    global hook_called
+    hook_called = True
+    assert ctx.get("task") == "test task"
+""")
+        runner = ci.HookRunner(Path(tmpdir))
+        runner.load()
+        ctx = {"task": "test task", "branch": "main", "phase_name": "phase_0"}
+        assert runner.before(0, ctx) is True
+
+
+def test_hook_runner_after_hook_called():
+    """HookRunner.after() executes the after_phase hook with result"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        hooks_file = Path(tmpdir) / ".claude-workflow-hooks.py"
+        hooks_file.write_text("""
+def after_phase_1(ctx, result):
+    assert ctx.get("task") == "test"
+    assert result == "success"
+""")
+        runner = ci.HookRunner(Path(tmpdir))
+        runner.load()
+        ctx = {"task": "test", "branch": "main", "phase_name": "phase_1"}
+        assert runner.after(1, ctx, "success") is True
+
+
+def test_hook_runner_hook_exception_caught():
+    """HookRunner catches exceptions in hooks and returns False"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        hooks_file = Path(tmpdir) / ".claude-workflow-hooks.py"
+        hooks_file.write_text("""
+def before_phase_0(ctx):
+    raise RuntimeError("Hook error")
+""")
+        runner = ci.HookRunner(Path(tmpdir))
+        runner.load()
+        ctx = {"task": "test", "branch": "main", "phase_name": "phase_0"}
+        # Should return False but not raise
+        assert runner.before(0, ctx) is False
+
+
+def test_hook_runner_no_args_hook():
+    """HookRunner supports hooks with zero parameters"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        hooks_file = Path(tmpdir) / ".claude-workflow-hooks.py"
+        hooks_file.write_text("""
+counter = 0
+
+def before_phase_0():
+    global counter
+    counter += 1
+""")
+        runner = ci.HookRunner(Path(tmpdir))
+        runner.load()
+        ctx = {}
+        assert runner.before(0, ctx) is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
