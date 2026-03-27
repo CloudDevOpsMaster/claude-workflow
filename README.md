@@ -435,6 +435,88 @@ Si un hook genera excepción:
 
 ---
 
+## 🌍 Multi-Repositorio Support
+
+`claude-multi` permite ejecutar `claude-iterative` en paralelo sobre múltiples repositorios con una sola configuración. Ideal para:
+- Aplicar la misma feature/fix a varios repos
+- Migrations sistémicas (ej: agregar type hints a 10 servicios)
+- Refactorings coordinados
+
+### Quick Start
+
+**1. Crear config YAML:**
+```yaml
+# multi.yaml
+task: "add type hints to all public functions"
+repos:
+  - path: /Users/you/projects/service-a
+  - path: /Users/you/projects/service-b
+    branch: feat/types-b        # override branch per repo
+  - path: /Users/you/projects/lib-core
+```
+
+**2. Ejecutar:**
+```bash
+claude-multi --config multi.yaml --workers 3 --output REPORT.md
+```
+
+**3. Revisar resultados:**
+```bash
+cat REPORT.md
+# Muestra status, duración, exit code por repo
+```
+
+### Diferencia vs Manual
+
+| Aspecto | `claude-multi` | N × `claude-iterative` manual |
+|---------|---|---|
+| **Paralelismo** | ✅ Paralelo (N repos en paralelo) | ❌ Secuencial (esperar N veces) |
+| **Reporte unificado** | ✅ `MULTI_REPORT.md` | ❌ N branches/reports distintos |
+| **Duración total** | ~máximo(duración_por_repo) | ~suma(duraciones) |
+| **Config único** | ✅ Sí | ❌ No |
+
+### CLI Flags
+
+```bash
+claude-multi --help
+  --config CONFIG     Path to YAML/JSON config (required)
+  --workers N         Max parallel repos (default: 3)
+  --output FILE       Report output file (default: MULTI_REPORT.md)
+  --auto              Run in auto mode (default: True)
+```
+
+### Ejemplo de Output
+
+```markdown
+# Multi-Repository Report
+
+Generated: 2026-03-27 15:30:00
+
+## Summary
+
+| Repository | Branch | Status | Duration (s) | Exit Code |
+|---|---|---|---:|---:|
+| /projects/service-a | feat/types | ✅ SUCCESS | 245.3s | 0 |
+| /projects/service-b | feat/types-b | ✅ SUCCESS | 198.7s | 0 |
+| /projects/lib-core | main | ❌ FAILURE | 120.1s | 1 |
+
+## Totals
+
+- **Total Repositories:** 3
+- **Successful:** 2/3
+- **Total Duration:** 564.1s (9.4m)
+
+## Failures
+
+### /projects/lib-core
+
+**Status:** failure
+**Exit Code:** 1
+**Error:** [stderr output from claude-iterative]
+```
+
+---
+
 ## 📊 Reportes de Ejecución
 
 Cada run de `claude-iterative` genera un **archivo de reporte** en `agents/REPORT.md` con un resumen completo de la ejecución.
