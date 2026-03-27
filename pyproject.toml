@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-workflow"
+version = "0.1.0"
+description = "Multi-agent parallel workflow CLI tools powered by Claude Code"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+claude-iterative = "claude_workflow.iterative:main"
+claude-plan-exec  = "claude_workflow.plan_exec:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["claude_workflow"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=claude_workflow --cov-report=term-missing"
+
+[dependency-groups]
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
