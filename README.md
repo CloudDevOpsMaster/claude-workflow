@@ -367,6 +367,74 @@ claude-iterative --resume sess_20260325-oauth2
 - Los outputs son always markdown (`.md`) para fácil revisión
 - El script es idempotente: puedes reanudar sin miedo a duplicar
 
+## 🔌 Sistema de Plugins / Hooks
+
+`claude-iterative` soporta hooks personalizados que se ejecutan **antes y después de cada fase** del workflow. Esto permite integración con sistemas externos, validación custom, o notificaciones sin modificar el código del tool.
+
+### Diferencia con Claude Code Hooks
+
+| Aspecto | claude-iterative Hooks | Claude Code Hooks |
+|---------|---|---|
+| **Nivel** | Fase del workflow (6 puntos: 0-5) | Herramienta individual |
+| **Ejecución** | Python sincrónico (en-proceso) | Shell script (subproceso) |
+| **Contexto** | Rich: task, branch, phase_name, phase result | Ninguno (solo env vars) |
+| **Sintaxis** | `before_phase_N(ctx)`, `after_phase_N(ctx, result)` | Shell scripts en settings.json |
+| **Scope** | Workflow multi-fase completo | Operaciones de herramientas puntuales |
+| **Uso típico** | Validación pre-fase, notificaciones, reporting | Formateo de código, git hooks |
+
+### Crear Hooks
+
+Crear un archivo `.claude-workflow-hooks.py` en la raíz del proyecto:
+
+```python
+"""Custom hooks for claude-iterative workflow."""
+
+def before_phase_0(ctx):
+    """Pre-branch: validate repo state."""
+    import subprocess
+    result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+    if result.stdout.strip():
+        raise RuntimeError("Repo has uncommitted changes. Commit or stash first.")
+    print(f"✓ Pre-check passed for task: {ctx['task']}")
+
+def after_phase_2(ctx, result):
+    """Post-synthesis: notify about plan."""
+    print(f"📋 Plan ready for {ctx['task']}")
+    # Ejemplo: enviar a Slack
+    # requests.post(WEBHOOK_URL, json={"text": f"Plan ready: {ctx['task']}"})
+
+def after_phase_4(ctx, result):
+    """Post-integration: check coverage."""
+    ok, coverage = result
+    print(f"📊 Coverage: {coverage:.1f}%")
+    if coverage < 80:
+        print(f"⚠️  Coverage below 80% threshold")
+```
+
+### Context Dict
+
+Cada hook recibe un `ctx` dict con:
+- `task` — descripción de la tarea
+- `branch` — nombre del git branch
+- `phase_name` — nombre legible de la fase (ej: "phase_0_branch")
+- `phase_num` — número de fase (0-5)
+
+### Result Types
+
+Hooks `after_phase_N` reciben un `result` según la fase:
+- Fases 0-3: `bool` (success/failure)
+- Fase 4 (integrate): `(bool, float)` — (success, coverage%)
+- Fase 5 (commit): `bool`
+
+### Manejo de Errores
+
+Si un hook genera excepción:
+- Se logea el error
+- El workflow **continúa** (no se aborta)
+- Ideal para integración robusta con sistemas externos
+
+---
+
 ## 📊 Reportes de Ejecución
 
 Cada run de `claude-iterative` genera un **archivo de reporte** en `agents/REPORT.md` con un resumen completo de la ejecución.
