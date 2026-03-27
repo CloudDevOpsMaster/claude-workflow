@@ -477,5 +477,123 @@ def test_token_store_partial_keys():
         assert "output" in all_data["ANALYST"]
 
 
+# ─────────────────────────────────────────────
+# Test: _generate_report_md()
+# ─────────────────────────────────────────────
+
+def test_generate_report_md_creates_file():
+    """_generate_report_md() should create agents/REPORT.md"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agents_dir = Path(tmpdir)
+
+        results = {
+            "branch": True,
+            "analysis": True,
+            "synthesize": True,
+            "implement": True,
+            "integrate": True,
+            "commit": True,
+            "coverage": 85.5,
+        }
+
+        durations = {
+            "branch": 2.0,
+            "analysis": 45.0,
+            "synthesize": 15.0,
+            "implement": 30.0,
+            "integrate": 20.0,
+            "commit": 5.0,
+        }
+
+        ci._generate_report_md(results, durations, None, "feat/test", agents_dir)
+
+        report_file = agents_dir / "REPORT.md"
+        assert report_file.exists()
+        content = report_file.read_text()
+
+        # Check for key sections
+        assert "Reporte de Ejecución" in content
+        assert "feat/test" in content
+        assert "Fase 0: Branch" in content
+        assert "Fase 1: Análisis" in content
+        assert "✅ OK" in content
+        assert "85.5%" in content
+
+
+def test_generate_report_md_with_token_store():
+    """_generate_report_md() should include token info from TokenStore"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agents_dir = Path(tmpdir)
+        token_file = Path(tmpdir) / "tokens.json"
+
+        # Create a token store with some data
+        token_store = ci.TokenStore(token_file)
+        token_store.add("ANALYST", {"input": 1000, "output": 500, "cost_usd": 0.05})
+        token_store.add("SYNTHESIZER", {"input": 800, "output": 300, "cost_usd": 0.04})
+
+        results = {
+            "branch": True,
+            "analysis": True,
+            "synthesize": True,
+            "implement": True,
+            "integrate": True,
+            "commit": True,
+            "coverage": 80,
+        }
+
+        durations = {
+            "branch": 1.0,
+            "analysis": 30.0,
+            "synthesize": 10.0,
+            "implement": 25.0,
+            "integrate": 15.0,
+            "commit": 3.0,
+        }
+
+        ci._generate_report_md(results, durations, token_store, "feat/tokens", agents_dir)
+
+        report_file = agents_dir / "REPORT.md"
+        content = report_file.read_text()
+
+        # Should include token counts
+        assert "1,000" in content or "1000" in content  # Input tokens
+        assert "500" in content  # Output tokens
+        assert "0.05" in content or "0.0500" in content  # Cost
+
+
+def test_generate_report_md_handles_none_token_store():
+    """_generate_report_md() should work with None token_store"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agents_dir = Path(tmpdir)
+
+        results = {
+            "branch": True,
+            "analysis": False,  # Failed phase
+            "synthesize": True,
+            "implement": True,
+            "integrate": True,
+            "commit": True,
+            "coverage": 75,
+        }
+
+        durations = {
+            "branch": 1.0,
+            "analysis": 30.0,
+            "synthesize": 10.0,
+            "implement": 25.0,
+            "integrate": 15.0,
+            "commit": 3.0,
+        }
+
+        # Should not raise error with None token_store
+        ci._generate_report_md(results, durations, None, "feat/no-tokens", agents_dir)
+
+        report_file = agents_dir / "REPORT.md"
+        assert report_file.exists()
+        content = report_file.read_text()
+
+        assert "❌ FAIL" in content  # Failed phase should show as FAIL
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

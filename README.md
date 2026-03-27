@@ -367,6 +367,71 @@ claude-iterative --resume sess_20260325-oauth2
 - Los outputs son always markdown (`.md`) para fácil revisión
 - El script es idempotente: puedes reanudar sin miedo a duplicar
 
+## 📊 Reportes de Ejecución
+
+Cada run de `claude-iterative` genera un **archivo de reporte** en `agents/REPORT.md` con un resumen completo de la ejecución.
+
+### Ejemplo de REPORT.md
+
+```markdown
+# Reporte de Ejecución
+
+**Rama:** feat/my-feature
+**Fecha:** 2026-03-27 14:35:22
+
+## Resumen por Fase
+
+| Fase | Status | Duración (s) | Input | Output | Costo USD |
+|------|--------|--------------|-------|--------|-----------|
+| Fase 0: Branch | ✅ OK | 2.1s | - | - | - |
+| Fase 1: Análisis | ✅ OK | 185.3s | 12,400 | 3,200 | $0.0420 |
+| Fase 2: Síntesis | ✅ OK | 72.5s | 8,100 | 1,800 | $0.0215 |
+| Fase 3: Implementación | ✅ OK | 241.2s | 15,800 | 4,500 | $0.0598 |
+| Fase 4: Integración | ✅ OK | 117.5s | - | - | - |
+| Fase 5: Commit | ✅ OK | 8.2s | 2,100 | 450 | $0.0081 |
+
+## Resumen
+
+- **Duración total:** 626.8s (10.4 min)
+- **Tokens entrada:** 38,400
+- **Tokens salida:** 9,950
+- **Costo total:** $0.1314
+- **Coverage:** 84.5%
+```
+
+### Diferencia vs Output Console
+
+| Aspecto | Console Output | `agents/REPORT.md` |
+|---------|---|---|
+| **Persistencia** | Solo mientras corre | Archivo permanente |
+| **Formato** | ASCII box | Markdown table |
+| **Reutilizable** | No | Sí (para CI/CD, análisis) |
+| **Granularidad** | Por agente | Por fase |
+| **Tokens** | Solo total | Por fase |
+
+### Cómo usar el reporte
+
+**En CI/CD:**
+```bash
+claude-iterative -t "my task" --auto
+# Verificar el reporte después
+grep "Coverage" agents/REPORT.md || exit 1
+```
+
+**Análisis de costos:**
+```bash
+# Extraer costo total
+cat agents/REPORT.md | grep "Costo total"
+```
+
+**Debugging:**
+```bash
+# Ver duración de cada fase para identificar cuellos de botella
+cat agents/REPORT.md | grep "Duración"
+```
+
+---
+
 ## 📞 Soporte
 
 Para reportar bugs o sugerencias:
