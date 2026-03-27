@@ -1442,7 +1442,95 @@ def _save_pause(store: SessionStore, sessions_file: Path, paused_at: str, branch
             _delete_branch(branch)
 
 
-def _print_summary(results: dict, token_store: "TokenStore | None" = None) -> None:
+def _generate_report_md(
+    results: dict,
+    durations: Dict[str, float],
+    token_store: "TokenStore | None",
+    branch: str,
+    agents_dir: Path,
+) -> None:
+    """Generate agents/REPORT.md with per-phase status, duration, tokens, and cost."""
+    report_file = agents_dir / "REPORT.md"
+
+    lines = [
+        "# Reporte de Ejecución\n",
+        f"**Rama:** {branch}\n",
+        f"**Fecha:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n",
+        "## Resumen por Fase\n",
+        "| Fase | Status | Duración (s) | Input | Output | Costo USD |",
+        "|------|--------|--------------|-------|--------|-----------|",
+    ]
+
+    phase_names = {
+        "branch": "Fase 0: Branch",
+        "analysis": "Fase 1: Análisis",
+        "synthesize": "Fase 2: Síntesis",
+        "implement": "Fase 3: Implementación",
+        "integrate": "Fase 4: Integración",
+        "commit": "Fase 5: Commit",
+    }
+
+    total_duration = 0.0
+    total_input = 0
+    total_output = 0
+    total_cost = 0.0
+
+    for phase, name in phase_names.items():
+        if phase in results:
+            status = "✅ OK" if results[phase] else "❌ FAIL"
+            duration = durations.get(phase, 0.0)
+            total_duration += duration
+
+            # Get token info from token_store if available
+            input_tokens = 0
+            output_tokens = 0
+            cost = 0.0
+            if token_store:
+                role_map = {
+                    "analysis": "ANALYST",
+                    "synthesize": "SYNTHESIZER",
+                    "implement": "IMPLEMENTER",
+                    "integrate": "INTEGRATOR",
+                    "commit": "COMMITTER",
+                }
+                role = role_map.get(phase)
+                if role:
+                    data = token_store._read()
+                    if role in data:
+                        input_tokens = data[role].get("input", 0)
+                        output_tokens = data[role].get("output", 0)
+                        cost = data[role].get("cost_usd", 0.0)
+                        total_input += input_tokens
+                        total_output += output_tokens
+                        total_cost += cost
+
+            lines.append(
+                f"| {name} | {status} | {duration:>6.1f}s | {input_tokens:>5,} | {output_tokens:>6,} | ${cost:>8.4f} |"
+            )
+
+    # Summary section
+    lines.extend([
+        "\n## Resumen",
+        f"- **Duración total:** {total_duration:.1f}s",
+        f"- **Tokens entrada:** {total_input:,}",
+        f"- **Tokens salida:** {total_output:,}",
+        f"- **Costo total:** ${total_cost:.4f}",
+    ])
+
+    if "coverage" in results:
+        lines.append(f"- **Coverage:** {results['coverage']}%")
+
+    report_file.write_text("\n".join(lines))
+    print(f"📊 Reporte generado: {report_file}")
+
+
+def _print_summary(
+    results: dict,
+    token_store: "TokenStore | None" = None,
+    durations: Dict[str, float] | None = None,
+    branch: str = "",
+    agents_dir: Path | None = None,
+) -> None:
     print(f"\n╔{'═'*58}╗")
     print("║  RESUMEN FINAL                                           ║")
     icons = {
@@ -1470,6 +1558,10 @@ def _print_summary(results: dict, token_store: "TokenStore | None" = None) -> No
             print(f"║    ⚡ Caché (read)   : {cr:>10,}                       ║")
             print(f"║    💰 Costo total    : ${cost:>10.4f}                   ║")
     print(f"╚{'═'*58}╝\n")
+
+    # Generar REPORT.md si tenemos durations y agents_dir
+    if durations and agents_dir:
+        _generate_report_md(results, durations, token_store, branch, agents_dir)
 
 
 # ─────────────────────────────────────────────
