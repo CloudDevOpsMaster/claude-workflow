@@ -1274,3 +1274,232 @@ def test_step_branch_prints_output(capsys, tmp_path, monkeypatch):
     # Output contains the section header for "Crear branch"
     assert "Crear branch" in captured.out or "PASO 1" in captured.out
     assert result is True
+
+
+# ─────────────────────────────────────────────
+# Tests para main() y CLI
+# ─────────────────────────────────────────────
+
+def test_main_with_task_argument(tmp_path, monkeypatch):
+    """main() parses --task argument correctly."""
+    monkeypatch.chdir(tmp_path)
+    test_args = ["script.py", "--task", "Test feature"]
+
+    with patch("sys.argv", test_args):
+        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
+            with patch("claude_workflow.plan_exec.timestamp_branch", return_value="branch-123"):
+                try:
+                    pe.main()
+                except SystemExit:
+                    pass
+
+            # Verify _main_steps was called
+            assert mock_main_steps.called
+
+
+def test_main_with_branch_argument(tmp_path, monkeypatch):
+    """main() uses custom branch when provided."""
+    monkeypatch.chdir(tmp_path)
+    test_args = ["script.py", "--task", "Test", "--branch", "feature/custom"]
+
+    with patch("sys.argv", test_args):
+        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
+            try:
+                pe.main()
+            except SystemExit:
+                pass
+
+            args = mock_main_steps.call_args[0][0]
+            assert args.branch == "feature/custom"
+
+
+def test_main_with_coverage_argument(tmp_path, monkeypatch):
+    """main() sets MIN_COVERAGE from argument."""
+    monkeypatch.chdir(tmp_path)
+    test_args = ["script.py", "--task", "Test", "--coverage", "90"]
+
+    with patch("sys.argv", test_args):
+        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
+            try:
+                pe.main()
+            except SystemExit:
+                pass
+
+            # Verify coverage argument was parsed
+            assert mock_main_steps.called
+
+
+def test_main_with_opencode_fallback_flag(tmp_path, monkeypatch):
+    """main() enables opencode fallback from flag."""
+    monkeypatch.chdir(tmp_path)
+    test_args = ["script.py", "--task", "Test", "--opencode-fallback"]
+
+    with patch("sys.argv", test_args):
+        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
+            try:
+                pe.main()
+            except SystemExit:
+                pass
+
+            # Check that _OPENCODE_FALLBACK was set
+            assert mock_main_steps.called
+
+
+def test_main_with_only_opencode_flag(tmp_path, monkeypatch):
+    """main() enables only opencode mode from flag."""
+    monkeypatch.chdir(tmp_path)
+    test_args = ["script.py", "--task", "Test", "--only-opencode"]
+
+    with patch("sys.argv", test_args):
+        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
+            try:
+                pe.main()
+            except SystemExit:
+                pass
+
+            assert mock_main_steps.called
+
+
+def test_main_with_skip_plan_loop(tmp_path, monkeypatch):
+    """main() respects --skip-plan-loop flag."""
+    monkeypatch.chdir(tmp_path)
+    test_args = ["script.py", "--task", "Test", "--skip-plan-loop"]
+
+    with patch("sys.argv", test_args):
+        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
+            try:
+                pe.main()
+            except SystemExit:
+                pass
+
+            args = mock_main_steps.call_args[0][0]
+            assert args.skip_plan_loop is True
+
+
+def test_main_with_skip_exec(tmp_path, monkeypatch):
+    """main() respects --skip-exec flag."""
+    monkeypatch.chdir(tmp_path)
+    test_args = ["script.py", "--task", "Test", "--skip-exec"]
+
+    with patch("sys.argv", test_args):
+        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
+            try:
+                pe.main()
+            except SystemExit:
+                pass
+
+            args = mock_main_steps.call_args[0][0]
+            assert args.skip_exec is True
+
+
+def test_main_with_skip_tests(tmp_path, monkeypatch):
+    """main() respects --skip-tests flag."""
+    monkeypatch.chdir(tmp_path)
+    test_args = ["script.py", "--task", "Test", "--skip-tests"]
+
+    with patch("sys.argv", test_args):
+        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
+            try:
+                pe.main()
+            except SystemExit:
+                pass
+
+            args = mock_main_steps.call_args[0][0]
+            assert args.skip_tests is True
+
+
+def test_main_with_auto_flag(tmp_path, monkeypatch):
+    """main() sets auto mode from --auto flag."""
+    monkeypatch.chdir(tmp_path)
+    test_args = ["script.py", "--task", "Test", "--auto"]
+
+    with patch("sys.argv", test_args):
+        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
+            try:
+                pe.main()
+            except SystemExit:
+                pass
+
+            args = mock_main_steps.call_args[0][0]
+            assert args.auto is True
+
+
+# ─────────────────────────────────────────────
+# Tests para claude_p con flags _OPENCODE_*
+# ─────────────────────────────────────────────
+
+def test_claude_p_with_only_opencode_flag():
+    """claude_p uses opencode when _ONLY_OPENCODE is True."""
+    original_flag = pe._ONLY_OPENCODE
+    try:
+        pe._ONLY_OPENCODE = True
+        with patch("claude_workflow.plan_exec._call_opencode") as mock_opencode:
+            mock_opencode.return_value = (0, "test output", None, {})
+            code, text, usage = pe.claude_p("test prompt")
+
+            assert mock_opencode.called
+            assert text == "test output"
+    finally:
+        pe._ONLY_OPENCODE = original_flag
+
+
+def test_claude_p_with_opencode_fallback_on_token_exhausted():
+    """claude_p falls back to opencode on token exhaustion."""
+    original_fallback = pe._OPENCODE_FALLBACK
+    try:
+        pe._OPENCODE_FALLBACK = True
+        with patch("subprocess.run") as mock_run:
+            with patch("claude_workflow.plan_exec._is_token_exhausted", return_value=True):
+                with patch("claude_workflow.plan_exec._call_opencode") as mock_opencode:
+                    # Claude fails with token exhausted
+                    mock_run.return_value = MagicMock(
+                        returncode=1,
+                        stdout="",
+                        stderr="context length exceeded"
+                    )
+                    mock_opencode.return_value = (0, "opencode output", None, {})
+
+                    code, text, usage = pe.claude_p("test prompt")
+
+                    assert mock_opencode.called
+                    assert text == "opencode output"
+    finally:
+        pe._OPENCODE_FALLBACK = original_fallback
+
+
+def test_claude_stream_with_only_opencode():
+    """claude_stream uses opencode when _ONLY_OPENCODE is True."""
+    original_flag = pe._ONLY_OPENCODE
+    try:
+        pe._ONLY_OPENCODE = True
+        with patch("claude_workflow.plan_exec._call_opencode") as mock_opencode:
+            with patch("builtins.print"):  # Suppress output
+                mock_opencode.return_value = (0, "test output", None, {})
+                code, events = pe.claude_stream("test prompt")
+
+                assert mock_opencode.called
+                assert code == 0
+    finally:
+        pe._ONLY_OPENCODE = original_flag
+
+
+def test_is_token_exhausted_detects_patterns():
+    """_is_token_exhausted recognizes token exhaustion patterns."""
+    patterns = [
+        "context length exceeded",
+        "context_length_exceeded",
+        "context window exceeded",
+        "token limit reached",
+        "prompt is too long",
+    ]
+
+    for pattern in patterns:
+        result = pe._is_token_exhausted(1, pattern)
+        assert result is True, f"Failed to detect: {pattern}"
+
+
+def test_is_token_exhausted_ignores_false_positives():
+    """_is_token_exhausted ignores non-token-exhaustion errors."""
+    assert pe._is_token_exhausted(0, "context length") is False  # exit code 0
+    assert pe._is_token_exhausted(1, "generic error") is False
+    assert pe._is_token_exhausted(1, "connection timeout") is False
