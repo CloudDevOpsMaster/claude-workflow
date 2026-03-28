@@ -213,6 +213,70 @@ class HookRunner:
 
 
 # ─────────────────────────────────────────────
+# Prompt Loader System
+# ─────────────────────────────────────────────
+
+class PromptLoader:
+    """Lee prompts personalizados desde .claude-workflow/prompts/*.md.
+    Fallback a constantes del módulo si el directorio no existe o el archivo falta.
+    """
+
+    def __init__(self, repo_root: Path = None):
+        self.repo_root = repo_root or Path.cwd()
+        self.prompts_dir = self.repo_root / ".claude-workflow" / "prompts"
+        self._custom: Dict[str, str] = {}
+        self._logger = logging.getLogger(__name__)
+
+    def load(self) -> int:
+        """Carga todos los .md encontrados. Retorna cantidad de prompts cargados."""
+        if not self.prompts_dir.exists():
+            return 0
+        loaded = 0
+        # Se define después en _PROMPT_FILES
+        try:
+            for name, (filename, expected_placeholders) in _PROMPT_FILES.items():
+                path = self.prompts_dir / filename
+                if path.exists():
+                    text = path.read_text(encoding="utf-8").strip()
+                    if text:
+                        self._validate(name, text, expected_placeholders)
+                        self._custom[name] = text
+                        loaded += 1
+        except (NameError, TypeError):
+            # _PROMPT_FILES no está definido aún (durante inicialización)
+            return 0
+        if loaded:
+            self._logger.info(f"PromptLoader: {loaded} prompt(s) custom cargados desde {self.prompts_dir}")
+        return loaded
+
+    def _validate(self, name: str, template: str, expected: set) -> None:
+        """Advierte si un prompt custom le faltan placeholders esperados."""
+        import string
+        try:
+            actual = {f for _, f, _, _ in string.Formatter().parse(template) if f is not None}
+        except (ValueError, KeyError):
+            self._logger.warning(f"PromptLoader: no se pudo parsear '{name}'")
+            return
+        missing = expected - actual
+        if missing:
+            self._logger.warning(
+                f"PromptLoader: '{name}' le faltan placeholders {missing} — "
+                "puede causar KeyError en ejecución"
+            )
+
+    def get(self, name: str) -> str:
+        """Retorna prompt custom si existe, sino la constante del módulo."""
+        if name in self._custom:
+            return self._custom[name]
+        # fallback a constante del módulo
+        import claude_workflow.iterative as _m
+        default = getattr(_m, name, None)
+        if default is None:
+            raise KeyError(f"PromptLoader: prompt desconocido '{name}'")
+        return default
+
+
+# ─────────────────────────────────────────────
 # Enums y dataclasses
 # ─────────────────────────────────────────────
 
@@ -487,6 +551,53 @@ def _init_agents_dir(agents_dir: Path, task: str) -> None:
         tokens_file.write_text("{}")
 
 
+def init_prompts_dir(repo_root: Path = None) -> None:
+    """Crea .claude-workflow/prompts/ con un .md por agente (prompts defaults).
+    No sobreescribe archivos existentes.
+    """
+    root = repo_root or Path.cwd()
+    prompts_dir = root / _PROMPTS_DIR
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+
+    import claude_workflow.iterative as _m
+
+    created = []
+    skipped = []
+    for const_name, (filename, placeholders) in _PROMPT_FILES.items():
+        dest = prompts_dir / filename
+        if dest.exists():
+            skipped.append(filename)
+            continue
+        default_text = getattr(_m, const_name, "")
+        dest.write_text(default_text.strip() + "\n", encoding="utf-8")
+        created.append(filename)
+
+    # README con tabla de placeholders
+    readme = prompts_dir / "README.md"
+    if not readme.exists():
+        lines = [
+            "# Prompts de claude-workflow\n\n",
+            "Edita cada archivo `.md` para personalizar el prompt del agente correspondiente.\n\n",
+            "**Importante:** Conserva todos los `{placeholders}` listados a continuación. Si falta alguno, se emitirá una advertencia pero el prompt seguirá cargándose.\n\n",
+            "Ejecuta `claude-iterative --init` de nuevo para restaurar archivos faltantes (no sobreescribe existentes).\n\n",
+            "## Placeholders por archivo\n\n",
+            "| Archivo | Placeholders requeridos |\n",
+            "|---|---|\n",
+        ]
+        for _, (filename, phs) in _PROMPT_FILES.items():
+            ph_str = ", ".join(f"`{{{p}}}`" for p in sorted(phs))
+            lines.append(f"| `{filename}` | {ph_str} |\n")
+        readme.write_text("".join(lines), encoding="utf-8")
+        created.append("README.md")
+
+    print(f"✓ Directorio: {prompts_dir}")
+    if created:
+        print(f"  Creados  : {', '.join(created)}")
+    if skipped:
+        print(f"  Existentes (no modificados): {', '.join(skipped)}")
+    print("\nEdita los .md para personalizar los prompts. Los cambios aplican en el próximo run.\n")
+
+
 # ─────────────────────────────────────────────
 # Fase 0: Branch
 # ─────────────────────────────────────────────
@@ -558,9 +669,18 @@ def _prepend_context(prompt: str, project_ctx: str) -> str:
     return f"## Contexto del Proyecto\n{project_ctx}\n\n---\n{prompt}"
 
 
+def _get_prompt(name: str, loader: Optional["PromptLoader"]) -> str:
+    """Retorna prompt del loader si existe, sino la constante del módulo."""
+    if loader is not None:
+        return loader.get(name)
+    import claude_workflow.iterative as _m
+    return getattr(_m, name)
+
+
 def _run_analyst(task: str, agents_dir: Path, resume_id: Optional[str] = None,
                  project_ctx: str = "",
-                 token_store: Optional["TokenStore"] = None) -> AgentResult:
+                 token_store: Optional["TokenStore"] = None,
+                 prompt_loader: Optional["PromptLoader"] = None) -> AgentResult:
     output_file = agents_dir / "analysis" / "ANALYST.md"
     flags = [
         "--allowedTools", "Read,Grep,Glob,Write",
@@ -570,7 +690,7 @@ def _run_analyst(task: str, agents_dir: Path, resume_id: Optional[str] = None,
         flags += ["--resume", resume_id]
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        _prepend_context(ANALYST_PROMPT.format(task=task, output=output_file), project_ctx),
+        _prepend_context(_get_prompt("ANALYST_PROMPT", prompt_loader).format(task=task, output=output_file), project_ctx),
         flags=flags,
     )
     if token_store:
@@ -587,7 +707,8 @@ def _run_analyst(task: str, agents_dir: Path, resume_id: Optional[str] = None,
 
 def _run_architect(task: str, agents_dir: Path, resume_id: Optional[str] = None,
                    project_ctx: str = "",
-                   token_store: Optional["TokenStore"] = None) -> AgentResult:
+                   token_store: Optional["TokenStore"] = None,
+                   prompt_loader: Optional["PromptLoader"] = None) -> AgentResult:
     output_file = agents_dir / "analysis" / "ARCHITECT.md"
     flags = [
         "--allowedTools", "Read,Grep,Glob,Write",
@@ -597,7 +718,7 @@ def _run_architect(task: str, agents_dir: Path, resume_id: Optional[str] = None,
         flags += ["--resume", resume_id]
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        _prepend_context(ARCHITECT_PROMPT.format(task=task, output=output_file), project_ctx),
+        _prepend_context(_get_prompt("ARCHITECT_PROMPT", prompt_loader).format(task=task, output=output_file), project_ctx),
         flags=flags,
     )
     if token_store:
@@ -614,7 +735,8 @@ def _run_architect(task: str, agents_dir: Path, resume_id: Optional[str] = None,
 
 def _run_qa_planner(task: str, agents_dir: Path, resume_id: Optional[str] = None,
                     project_ctx: str = "",
-                    token_store: Optional["TokenStore"] = None) -> AgentResult:
+                    token_store: Optional["TokenStore"] = None,
+                    prompt_loader: Optional["PromptLoader"] = None) -> AgentResult:
     output_file = agents_dir / "analysis" / "QA_PLANNER.md"
     flags = [
         "--allowedTools", "Read,Grep,Glob,Write",
@@ -629,7 +751,7 @@ def _run_qa_planner(task: str, agents_dir: Path, resume_id: Optional[str] = None
         if project_ctx else ""
     )
     code, text, sid, usage = claude_p_with_session(
-        _prepend_context(QA_PLANNER_PROMPT.format(task=task, output=output_file), ctx_note),
+        _prepend_context(_get_prompt("QA_PLANNER_PROMPT", prompt_loader).format(task=task, output=output_file), ctx_note),
         flags=flags,
     )
     if token_store:
@@ -652,6 +774,7 @@ def phase1_analysis(
     skip_phases: List[int],
     resume: bool = False,
     token_store: Optional["TokenStore"] = None,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> Dict[AgentRole, AgentResult]:
     if 1 in skip_phases:
         print("\n⏭  Saltando Fase 1 (--skip-phase 1)")
@@ -669,18 +792,21 @@ def phase1_analysis(
             store.load(AgentRole.ANALYST) if resume else None,
             project_ctx=project_ctx,
             token_store=token_store,
+            prompt_loader=prompt_loader,
         )),
         (AgentRole.ARCHITECT,  lambda: _run_architect(
             task, agents_dir,
             store.load(AgentRole.ARCHITECT) if resume else None,
             project_ctx=project_ctx,
             token_store=token_store,
+            prompt_loader=prompt_loader,
         )),
         (AgentRole.QA_PLANNER, lambda: _run_qa_planner(
             task, agents_dir,
             store.load(AgentRole.QA_PLANNER) if resume else None,
             project_ctx=project_ctx,
             token_store=token_store,
+            prompt_loader=prompt_loader,
         )),
     ]
 
@@ -749,6 +875,7 @@ def phase2_synthesize(
     resume: bool = False,
     project_ctx: str = "",
     token_store: Optional["TokenStore"] = None,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> bool:
     if 2 in skip_phases:
         print("\n⏭  Saltando Fase 2 (--skip-phase 2)")
@@ -770,7 +897,7 @@ def phase2_synthesize(
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
         _prepend_context(
-            SYNTHESIZER_PROMPT.format(
+            _get_prompt("SYNTHESIZER_PROMPT", prompt_loader).format(
                 task=task,
                 analyst_file=agents_dir / "analysis" / "ANALYST.md",
                 architect_file=agents_dir / "analysis" / "ARCHITECT.md",
@@ -856,6 +983,7 @@ def _run_implementer(
     resume_id: Optional[str] = None,
     project_ctx: str = "",
     token_store: Optional["TokenStore"] = None,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> AgentResult:
     log_file = agents_dir / "implementation" / "IMPLEMENTER.md"
     flags = ["--dangerously-skip-permissions", "--max-turns", "40"]
@@ -864,7 +992,7 @@ def _run_implementer(
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
         _prepend_context(
-            IMPLEMENTER_PROMPT.format(
+            _get_prompt("IMPLEMENTER_PROMPT", prompt_loader).format(
                 task=task,
                 plan_file=agents_dir / "PLAN.md",
                 architect_file=agents_dir / "analysis" / "ARCHITECT.md",
@@ -969,6 +1097,7 @@ def _run_test_writer(
     dev_log_files: Optional[List[Path]] = None,
     project_ctx: str = "",
     token_store: Optional["TokenStore"] = None,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> AgentResult:
     log_file = agents_dir / "implementation" / "TEST_WRITER.md"
     flags = ["--dangerously-skip-permissions", "--max-turns", "30"]
@@ -978,7 +1107,7 @@ def _run_test_writer(
 
     if dev_log_files:
         impl_logs_str = "\n".join(f"  - {p}" for p in dev_log_files)
-        prompt = TEST_WRITER_PROMPT_MULTI.format(
+        prompt = _get_prompt("TEST_WRITER_PROMPT_MULTI", prompt_loader).format(
             task=task,
             plan_file=agents_dir / "PLAN.md",
             qa_file=agents_dir / "analysis" / "QA_PLANNER.md",
@@ -987,7 +1116,7 @@ def _run_test_writer(
             coverage=coverage,
         )
     else:
-        prompt = TEST_WRITER_PROMPT.format(
+        prompt = _get_prompt("TEST_WRITER_PROMPT", prompt_loader).format(
             task=task,
             plan_file=agents_dir / "PLAN.md",
             qa_file=agents_dir / "analysis" / "QA_PLANNER.md",
@@ -1015,6 +1144,7 @@ def _run_coordinator(
     n_agents: int,
     resume_id: Optional[str] = None,
     token_store: Optional["TokenStore"] = None,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> AgentResult:
     tasks_dir = agents_dir / "implementation" / "tasks"
     tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -1024,7 +1154,7 @@ def _run_coordinator(
         flags += ["--resume", resume_id]
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        COORDINATOR_PROMPT.format(
+        _get_prompt("COORDINATOR_PROMPT", prompt_loader).format(
             task=task,
             n_agents=n_agents,
             plan_file=agents_dir / "PLAN.md",
@@ -1053,6 +1183,7 @@ def _run_dev_agent(
     resume_id: Optional[str] = None,
     project_ctx: str = "",
     token_store: Optional["TokenStore"] = None,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> AgentResult:
     task_file = agents_dir / "implementation" / "tasks" / f"DEV_{index}.md"
     log_file = agents_dir / "implementation" / f"DEV_{index}.md"
@@ -1062,7 +1193,7 @@ def _run_dev_agent(
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
         _prepend_context(
-            DEV_AGENT_PROMPT.format(
+            _get_prompt("DEV_AGENT_PROMPT", prompt_loader).format(
                 task=task,
                 task_file=task_file,
                 index=index,
@@ -1098,6 +1229,7 @@ def phase3_implement(
     dev_agents: int = 1,
     project_ctx: str = "",
     token_store: Optional["TokenStore"] = None,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> bool:
     if 3 in skip_phases:
         print("\n⏭  Saltando Fase 3 (--skip-phase 3)")
@@ -1115,7 +1247,7 @@ def phase3_implement(
         # ── Rama N Dev agents ──
         # 3a. COORDINATOR (secuencial)
         coord_resume = store.load(AgentRole.COORDINATOR) if resume else None
-        coord_result = _run_coordinator(task, agents_dir, dev_agents, coord_resume, token_store)
+        coord_result = _run_coordinator(task, agents_dir, dev_agents, coord_resume, token_store, prompt_loader)
         mark = "✅" if coord_result.success else "❌"
         print(f"  {mark} COORDINATOR — {coord_result.duration_s:.1f}s")
         if coord_result.session_id:
@@ -1133,6 +1265,7 @@ def phase3_implement(
                     store.load_dev(i) if resume else None,
                     project_ctx=project_ctx,
                     token_store=token_store,
+                    prompt_loader=prompt_loader,
                 ),
             ))
         dev_results = runner.run_parallel(dev_tasks)
@@ -1154,7 +1287,7 @@ def phase3_implement(
 
         # 3c. TEST_WRITER (espera a todos los DEVs)
         tw_resume = store.load(AgentRole.TEST_WRITER) if resume else None
-        tw_result = _run_test_writer(task, agents_dir, coverage, tw_resume, dev_log_files, project_ctx, token_store)
+        tw_result = _run_test_writer(task, agents_dir, coverage, tw_resume, dev_log_files, project_ctx, token_store, prompt_loader)
         mark = "✅" if tw_result.success else "❌"
         print(f"  {mark} TEST_WRITER — {tw_result.duration_s:.1f}s")
         if tw_result.session_id:
@@ -1169,14 +1302,14 @@ def phase3_implement(
         if parallel_impl:
             tasks = [
                 (AgentRole.IMPLEMENTER, lambda: _run_implementer(
-                    task, agents_dir, coverage, impl_resume, project_ctx, token_store)),
+                    task, agents_dir, coverage, impl_resume, project_ctx, token_store, prompt_loader)),
                 (AgentRole.TEST_WRITER, lambda: _run_test_writer(
-                    task, agents_dir, coverage, tw_resume, None, project_ctx, token_store)),
+                    task, agents_dir, coverage, tw_resume, None, project_ctx, token_store, prompt_loader)),
             ]
             results = runner.run_parallel(tasks)
         else:
-            impl_result = _run_implementer(task, agents_dir, coverage, impl_resume, project_ctx, token_store)
-            tw_result = _run_test_writer(task, agents_dir, coverage, tw_resume, None, project_ctx, token_store)
+            impl_result = _run_implementer(task, agents_dir, coverage, impl_resume, project_ctx, token_store, prompt_loader)
+            tw_result = _run_test_writer(task, agents_dir, coverage, tw_resume, None, project_ctx, token_store, prompt_loader)
             results = {
                 AgentRole.IMPLEMENTER: impl_result,
                 AgentRole.TEST_WRITER: tw_result,
@@ -1231,6 +1364,7 @@ def phase4_integrate(
     coverage: int,
     resume: bool = False,
     token_store: Optional["TokenStore"] = None,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> Tuple[bool, float]:
     if 4 in skip_phases:
         print("\n⏭  Saltando Fase 4 (--skip-phase 4)")
@@ -1249,7 +1383,7 @@ def phase4_integrate(
     backend_dir = agents_dir.parent / "backend"
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        INTEGRATOR_PROMPT.format(
+        _get_prompt("INTEGRATOR_PROMPT", prompt_loader).format(
             task=task,
             agents_dir=agents_dir,
             backend_dir=backend_dir,
@@ -1303,6 +1437,27 @@ SIN: incluir contenido de archivos en la respuesta.
 """
 
 
+# ─────────────────────────────────────────────
+# Mapeo de prompts a archivos .md
+# ─────────────────────────────────────────────
+
+_PROMPT_FILES: Dict[str, tuple] = {
+    "ANALYST_PROMPT":           ("ANALYST.md",          {"task", "output"}),
+    "ARCHITECT_PROMPT":         ("ARCHITECT.md",        {"task", "output"}),
+    "QA_PLANNER_PROMPT":        ("QA_PLANNER.md",       {"task", "output"}),
+    "SYNTHESIZER_PROMPT":       ("SYNTHESIZER.md",      {"task", "analyst_file", "architect_file", "qa_file", "plan_file", "coverage"}),
+    "IMPLEMENTER_PROMPT":       ("IMPLEMENTER.md",      {"task", "plan_file", "architect_file", "log_file"}),
+    "TEST_WRITER_PROMPT":       ("TEST_WRITER.md",      {"task", "plan_file", "qa_file", "impl_log", "log_file", "coverage"}),
+    "TEST_WRITER_PROMPT_MULTI": ("TEST_WRITER_MULTI.md", {"task", "plan_file", "qa_file", "impl_logs", "log_file", "coverage"}),
+    "COORDINATOR_PROMPT":       ("COORDINATOR.md",      {"task", "n_agents", "plan_file", "tasks_dir", "log_file"}),
+    "DEV_AGENT_PROMPT":         ("DEV_AGENT.md",        {"task", "task_file", "index", "n_agents", "architect_file", "log_file"}),
+    "INTEGRATOR_PROMPT":        ("INTEGRATOR.md",       {"task", "agents_dir", "backend_dir", "coverage", "max_attempts", "log_file"}),
+    "COMMITTER_PROMPT":         ("COMMITTER.md",        {"task", "branch", "coverage", "plan_file", "integrator_log"}),
+}
+
+_PROMPTS_DIR = Path(".claude-workflow") / "prompts"
+
+
 def phase5_commit(
     task: str,
     branch: str,
@@ -1311,6 +1466,7 @@ def phase5_commit(
     skip_phases: List[int],
     coverage: float,
     token_store: Optional["TokenStore"] = None,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> bool:
     if 5 in skip_phases:
         print("\n⏭  Saltando Fase 5 (--skip-phase 5)")
@@ -1327,7 +1483,7 @@ def phase5_commit(
         flags += ["--resume", resume_id]
 
     code, text, sid, usage = claude_p_with_session(
-        COMMITTER_PROMPT.format(
+        _get_prompt("COMMITTER_PROMPT", prompt_loader).format(
             task=task,
             branch=branch,
             plan_file=agents_dir / "PLAN.md",
@@ -1392,6 +1548,7 @@ def run(
     dry_run: bool = False,
     agents_dir: Optional[Path] = None,
     dev_agents: int = 1,
+    prompt_loader: Optional["PromptLoader"] = None,
 ) -> int:
     global MIN_COVERAGE
     MIN_COVERAGE = coverage
@@ -1434,6 +1591,11 @@ def run(
     runner = ParallelRunner(max_workers=workers, timeout_s=timeout, max_retries=retries)
     gate = CheckpointGate(auto_mode=auto)
 
+    # Inicializar PromptLoader si no se proporcionó
+    if prompt_loader is None:
+        prompt_loader = PromptLoader()
+        prompt_loader.load()
+
     is_resume = bool(resume_session)
     results: Dict[str, object] = {}
 
@@ -1449,7 +1611,7 @@ def run(
     # ── FASE 1 ──
     analysis_results = phase1_analysis(
         task, _agents_dir, store, runner, skip, resume=is_resume,
-        token_store=token_store,
+        token_store=token_store, prompt_loader=prompt_loader,
     )
     if analysis_results:
         all_ok = all(r.success for r in analysis_results.values())
@@ -1470,7 +1632,7 @@ def run(
     # ── FASE 2 ──
     ok = phase2_synthesize(
         task, _agents_dir, store, skip, coverage, resume=is_resume,
-        project_ctx=project_ctx, token_store=token_store,
+        project_ctx=project_ctx, token_store=token_store, prompt_loader=prompt_loader,
     )
     results["synthesize"] = ok
     if not ok:
@@ -1485,6 +1647,7 @@ def run(
         task, _agents_dir, store, runner, skip, coverage,
         parallel_impl=parallel_impl, resume=is_resume,
         dev_agents=dev_agents, project_ctx=project_ctx, token_store=token_store,
+        prompt_loader=prompt_loader,
     )
     results["implement"] = ok
     if not ok:
@@ -1497,7 +1660,7 @@ def run(
     # ── FASE 4 ──
     ok, cov = phase4_integrate(
         task, _agents_dir, store, skip, coverage, resume=is_resume,
-        token_store=token_store,
+        token_store=token_store, prompt_loader=prompt_loader,
     )
     results["integrate"] = ok
     results["coverage"] = cov
@@ -1516,7 +1679,7 @@ def run(
     # ── FASE 5 ──
     ok = phase5_commit(
         task, branch, _agents_dir, store, skip, cov,
-        token_store=token_store,
+        token_store=token_store, prompt_loader=prompt_loader,
     )
     results["commit"] = ok
 
@@ -1718,7 +1881,16 @@ Ejemplos:
     parser.add_argument("--dev-agents",     type=int, default=1, dest="dev_agents",
                         metavar="N",
                         help="Dev agents en paralelo en Fase 3 (default: 1 = IMPLEMENTER clásico)")
+    parser.add_argument("--init",           action="store_true",
+                        help="Inicializar .claude-workflow/prompts/ con prompts editables")
+    parser.add_argument("--prompts-dir",    default="", metavar="PATH",
+                        help="Ruta a directorio con .md de prompts (default: .claude-workflow/prompts/ en cwd)")
     args = parser.parse_args()
+
+    # ── Manejar --init ──
+    if args.init:
+        init_prompts_dir()
+        return
 
     if not args.task and not args.resume:
         parser.error("Se requiere -t/--task o --resume SESSION_ID")
@@ -1738,6 +1910,12 @@ Ejemplos:
     if args.dev_agents > 1 and args.parallel_impl:
         print("Nota: --parallel-impl es ignorado cuando --dev-agents > 1")
 
+    # Construir PromptLoader si se especificó ruta alternativa
+    prompt_loader = None
+    if args.prompts_dir:
+        prompt_loader = PromptLoader(repo_root=Path(args.prompts_dir).parent)
+        prompt_loader.load()
+
     try:
         exit_code = run(
             task=task,
@@ -1753,6 +1931,7 @@ Ejemplos:
             skip_phases=args.skip_phases,
             dry_run=args.dry_run,
             dev_agents=args.dev_agents,
+            prompt_loader=prompt_loader,
         )
     except KeyboardInterrupt:
         print("\n⚠  Interrumpido por el usuario.")

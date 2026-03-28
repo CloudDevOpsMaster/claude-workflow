@@ -108,6 +108,12 @@ claude-iterative -t "Test suite para Auth" --type test --dry-run
 claude-iterative --resume sess_20260325-oauth2
 ```
 
+### Inicializar prompts personalizables
+```bash
+claude-iterative --init
+```
+Crea `.claude-workflow/prompts/` con un archivo `.md` por agente. Edita los archivos para personalizar los prompts sin modificar código.
+
 ## 🚩 Flags CLI
 
 ```
@@ -121,6 +127,8 @@ CONTROL:
   --auto                       Modo automático: sin prompts ni checkpoints
   --dry-run                    Mostrar plan sin ejecutar agentes
   --resume SESSION_ID          Reanudar sesión pausada
+  --init                       Inicializar .claude-workflow/prompts/ con archivos editables
+  --prompts-dir PATH           Ruta alternativa a directorio de prompts (default: .claude-workflow/prompts/)
 
 RECURSOS:
   --workers N                  Workers paralelos en Fase 1 (default: 3)
@@ -366,6 +374,70 @@ claude-iterative --resume sess_20260325-oauth2
 - En modo `--auto`, se asume "No" a todas las preguntas destructivas
 - Los outputs son always markdown (`.md`) para fácil revisión
 - El script es idempotente: puedes reanudar sin miedo a duplicar
+
+## 🎨 Personalizar Prompts
+
+Por defecto, cada agente usa prompts predefinidos. Puedes personalizar el tono, idioma o enfoque sin tocar código:
+
+### 1. Inicializar estructura de prompts
+
+```bash
+claude-iterative --init
+```
+
+Crea `.claude-workflow/prompts/` con:
+```
+.claude-workflow/prompts/
+├── README.md               ← tabla de placeholders
+├── ANALYST.md
+├── ARCHITECT.md
+├── QA_PLANNER.md
+├── SYNTHESIZER.md
+├── IMPLEMENTER.md
+├── TEST_WRITER.md
+├── TEST_WRITER_MULTI.md
+├── COORDINATOR.md
+├── DEV_AGENT.md
+├── INTEGRATOR.md
+└── COMMITTER.md
+```
+
+### 2. Editar prompts
+
+Abre cualquier archivo `.md` y personaliza el prompt manteniendo los `{placeholders}`:
+
+**Ejemplo: Cambiar idioma a inglés**
+```bash
+nano .claude-workflow/prompts/ANALYST.md
+```
+
+**Archivo original:**
+```
+Eres un analista de software senior. Analiza el proyecto actual y la tarea:
+TAREA: {task}
+...
+```
+
+**Personalizado:**
+```
+You are a senior software analyst. Analyze the current project and the task:
+TASK: {task}
+...
+```
+
+### 3. Los cambios aplican automáticamente
+
+En el próximo `claude-iterative` run, se usarán tus prompts custom. Si falta algún `{placeholder}`, se emitirá una advertencia pero el prompt seguirá cargándose.
+
+### Ruta alternativa de prompts
+
+Si prefieres guardar los prompts en otra ruta:
+
+```bash
+claude-iterative -t "Mi tarea" --prompts-dir /ruta/mis-prompts
+```
+
+---
 
 ## 🔌 Sistema de Plugins / Hooks
 
