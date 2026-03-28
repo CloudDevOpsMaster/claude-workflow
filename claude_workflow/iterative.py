@@ -1598,6 +1598,7 @@ def run(
 
     is_resume = bool(resume_session)
     results: Dict[str, object] = {}
+    durations: Dict[str, float] = {}
 
     # ── FASE 0 ──
     ok = phase0_branch(branch)
