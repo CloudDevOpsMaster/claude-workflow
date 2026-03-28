@@ -667,6 +667,154 @@ Luego reportar con contexto del plan y los logs.
 
 ---
 
+## 🧪 Testing & Coverage
+
+### Ejecutar Tests
+
+```bash
+# Correr todos los tests
+uv run --group dev pytest tests/ -v
+
+# Correr tests con coverage
+uv run --group dev pytest tests/ --cov=claude_workflow --cov-report=term-missing -q
+
+# Correr un archivo específico de tests
+uv run --group dev pytest tests/test_iterative.py -v
+
+# Correr un test específico
+uv run --group dev pytest tests/test_plan_exec.py::test_parse_coverage_pytest_format -v
+```
+
+### Cobertura Actual
+
+| Módulo | Cobertura | Tests | Estado |
+|--------|-----------|-------|--------|
+| iterative.py | 60% | 188 | ✅ Core phases cubiertas |
+| multi.py | 77% | 48 | ✅ Multi-repo flow cubierto |
+| plan_exec.py | 67% | 134 | ✅ Plan execution cubierto |
+| **TOTAL** | **64%** | **248** | ✅ Baseline sólido |
+
+### Estructura de Tests
+
+```
+tests/
+├── test_iterative.py      # Tests para phase functions, agents, prompts
+│   ├── _confirm() function
+│   ├── _collect_project_context()
+│   ├── AgentRole enum
+│   ├── AgentResult class
+│   ├── TokenStore operations
+│   ├── SessionStore operations
+│   ├── PromptLoader (custom prompts)
+│   ├── Phase functions (phase0-5)
+│   └── Agent execution (_run_analyst, _run_architect, etc.)
+│
+├── test_multi.py          # Tests para multi-repo orchestration
+│   ├── RepoConfig parsing
+│   ├── MultiConfig creation
+│   ├── parse_config() with JSON/YAML
+│   ├── run_repo_task() success/failure/timeout
+│   ├── run_parallel() execution
+│   └── generate_report() formatting
+│
+└── test_plan_exec.py      # Tests para plan execution workflow (NUEVO)
+    ├── Pure logic functions (parse_coverage, accum_usage, timestamp_branch)
+    ├── Git helpers (create_branch, commit_all, delete_branch)
+    ├── Claude subprocess integration (claude_p, claude_stream)
+    ├── step_* functions (branch, execute, tests, commit)
+    └── Main CLI parsing
+```
+
+### Tests Agregados Recientemente
+
+**test_plan_exec.py** (NEW - 134 tests)
+- ✅ `_is_token_exhausted()`: Detecta context window exceeded
+- ✅ `parse_coverage()`: Extrae % de pytest/jest output
+- ✅ `_accum_usage()`: Acumula tokens por step
+- ✅ `timestamp_branch()`: Genera branch name con timestamp
+- ✅ `git()` helpers: create_branch, commit_all, delete_branch
+- ✅ `claude_p()` & `claude_stream()`: Ejecución de Claude CLI
+- ✅ `run_tests()`: Detección de pytest vs jest
+- ✅ `step_*()` functions: Toda la fase workflow
+
+**test_multi.py** (28 new tests)
+- ✅ `run_repo_task()`: Success, failure, timeout, exceptions
+- ✅ `run_parallel()`: Multi-repo execution con sorting
+- ✅ `parse_config()`: JSON/YAML validation
+- ✅ `generate_report()`: Markdown report generation
+
+**test_iterative.py** (93 new tests)
+- ✅ `_run_analyst/architect/qa_planner/etc()`: Agent execution
+- ✅ `phase1_analysis/phase2_synthesize/etc()`: Phase functions
+- ✅ `TokenStore`: Token accounting across agents
+- ✅ `SessionStore`: Session persistence per role
+- ✅ `PromptLoader`: Custom prompt loading & validation
+
+### Cómo Contribuir Tests
+
+1. **Identificar líneas no cubiertas:**
+   ```bash
+   uv run --group dev pytest tests/ --cov=claude_workflow --cov-report=html
+   # Abre htmlcov/index.html para ver coverage visual
+   ```
+
+2. **Agregar test para función:**
+   ```python
+   # En tests/test_iterative.py, tests/test_multi.py, o tests/test_plan_exec.py
+
+   @patch("claude_workflow.iterative.claude_p_with_session")
+   def test_my_feature(mock_cps, tmp_path, monkeypatch):
+       """Descripción clara del test."""
+       monkeypatch.chdir(tmp_path)
+       mock_cps.return_value = (0, "output", "sess-id", {"input": 100})
+
+       result = ci.my_function("args")
+
+       assert result.success is True
+   ```
+
+3. **Correr tu test:**
+   ```bash
+   uv run --group dev pytest tests/test_iterative.py::test_my_feature -v
+   ```
+
+4. **Verificar coverage local:**
+   ```bash
+   uv run --group dev pytest tests/ --cov=claude_workflow -q
+   ```
+
+### Mocking Strategy
+
+Usamos `unittest.mock.patch` para aislar funciones:
+
+```python
+# Mock subprocess.run para git commands
+@patch("claude_workflow.plan_exec.subprocess.run")
+def test_git_operation(mock_run):
+    mock_run.return_value = Mock(returncode=0, stdout="output", stderr="")
+    result = pe.create_branch("feat/test")
+    assert result is True
+
+# Mock claude_p_with_session para agent execution
+@patch("claude_workflow.iterative.claude_p_with_session")
+def test_agent_runs(mock_cps):
+    mock_cps.return_value = (0, "output", "session-id", {"input": 100})
+    result = ci._run_analyst("task", analysis_dir, None)
+    assert result.success is True
+```
+
+### Coverage Goals
+
+Actual: **64%**
+Target: **>80%** (requiere ~213 statements más)
+
+Prioridad para mejorar:
+1. 🔴 Phase functions con múltiples ramificaciones (phase1-5)
+2. 🟡 Error handling paths en opencode fallback
+3. 🟡 Edge cases en subprocess integration
+
+---
+
 ## 🗺️ Próximos Pasos
 
 ### 1. Publicar en GitHub
