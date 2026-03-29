@@ -1335,3 +1335,331 @@ def test_is_token_exhausted_ignores_false_positives():
     assert pe._is_token_exhausted(0, "context length") is False  # exit code 0
     assert pe._is_token_exhausted(1, "generic error") is False
     assert pe._is_token_exhausted(1, "connection timeout") is False
+
+# ─────────────────────────────────────────────
+# Tests: Token limit logging and auto-reset
+# ─────────────────────────────────────────────
+
+def test_append_token_log_creates_file(tmp_path, monkeypatch):
+    """_append_token_log crea el archivo si no existe."""
+    monkeypatch.chdir(tmp_path)
+    entry = {"event": "token_exhausted", "step": "test"}
+    pe._append_token_log(entry)
+    
+    assert Path(pe.TOKEN_LIMIT_LOG).exists()
+    data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+    assert len(data) == 1
+    assert data[0] == entry
+
+
+def test_append_token_log_appends_multiple(tmp_path, monkeypatch):
+    """_append_token_log acumula múltiples entries."""
+    monkeypatch.chdir(tmp_path)
+    e1 = {"event": "token_exhausted", "step": "plan"}
+    e2 = {"event": "token_exhausted", "step": "exec"}
+    e3 = {"event": "reset_triggered", "step": "plan"}
+    
+    pe._append_token_log(e1)
+    pe._append_token_log(e2)
+    pe._append_token_log(e3)
+    
+    data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+    assert len(data) == 3
+    assert data[0] == e1
+    assert data[1] == e2
+    assert data[2] == e3
+
+
+def test_append_token_log_handles_corrupt_file(tmp_path, monkeypatch):
+    """_append_token_log maneja archivo corrupto gracefully."""
+    monkeypatch.chdir(tmp_path)
+    Path(pe.TOKEN_LIMIT_LOG).write_text("not valid json")
+    
+    entry = {"event": "token_exhausted", "step": "test"}
+    pe._append_token_log(entry)
+    
+    data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+    assert len(data) == 1
+    assert data[0] == entry
+
+
+def test_append_token_log_thread_safety(tmp_path, monkeypatch):
+    """_append_token_log es thread-safe."""
+    import threading
+    
+    monkeypatch.chdir(tmp_path)
+    
+    def append_entry(i):
+        pe._append_token_log({"event": "test", "index": i})
+    
+    threads = []
+    for i in range(20):
+        t = threading.Thread(target=append_entry, args=(i,))
+        threads.append(t)
+        t.start()
+    
+    for t in threads:
+        t.join()
+    
+    data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+    assert len(data) == 20
+
+
+def test_schedule_token_reset_returns_timer():
+    """_schedule_token_reset retorna threading.Timer."""
+    timer = pe._schedule_token_reset("test", "2026-03-29T14:00:00", delay_s=10)
+    try:
+        assert isinstance(timer, __import__('threading').Timer)
+        assert timer.daemon is True
+    finally:
+        timer.cancel()
+
+
+def test_schedule_token_reset_fires_callback():
+    """_schedule_token_reset ejecuta callback después del delay."""
+    import threading
+    event = threading.Event()
+    
+    def callback():
+        event.set()
+    
+    timer = pe._schedule_token_reset("test", "2026-03-29T14:00:00", callback=callback, delay_s=0.01)
+    timer.join()  # Espera a que termine
+    
+    assert event.is_set(), "Callback debería haber sido ejecutado"
+
+
+def test_schedule_token_reset_timer_is_daemon():
+    """_schedule_token_reset crea timer daemon."""
+    timer = pe._schedule_token_reset("test", "2026-03-29T14:00:00", delay_s=10)
+    try:
+        assert timer.daemon is True
+    finally:
+        timer.cancel()
+
+
+def test_schedule_token_reset_logs_reset_event(tmp_path, monkeypatch):
+    """_schedule_token_reset escribe reset_triggered en el log."""
+    monkeypatch.chdir(tmp_path)
+    
+    def noop():
+        pass
+    
+    timer = pe._schedule_token_reset("test", "2026-03-29T14:00:00", callback=noop, delay_s=0.01)
+    timer.join()
+    
+    data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+    assert len(data) == 1
+    assert data[0]["event"] == "reset_triggered"
+    assert data[0]["step"] == "test"
+    assert data[0]["original_exhausted_at"] == "2026-03-29T14:00:00"
+
+
+def test_schedule_token_reset_no_callback(tmp_path, monkeypatch):
+    """_schedule_token_reset funciona sin callback."""
+    monkeypatch.chdir(tmp_path)
+    
+    timer = pe._schedule_token_reset("test", "2026-03-29T14:00:00", callback=None, delay_s=0.01)
+    timer.join()
+    
+    data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+    assert len(data) == 1
+
+
+def test_schedule_token_reset_callback_exception_does_not_crash(tmp_path, monkeypatch):
+    """_schedule_token_reset maneja excepciones en callback sin crash."""
+    monkeypatch.chdir(tmp_path)
+    
+    def bad_callback():
+        raise RuntimeError("Intentional error")
+    
+    timer = pe._schedule_token_reset("test", "2026-03-29T14:00:00", callback=bad_callback, delay_s=0.01)
+    timer.join()
+    
+    # No debería haber excepción; log debería existir
+    data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+    assert len(data) == 1
+
+
+def test_handle_token_exhaustion_writes_log(tmp_path, monkeypatch):
+    """_handle_token_exhaustion escribe entry correcto."""
+    monkeypatch.chdir(tmp_path)
+    
+    timer = pe._handle_token_exhaustion(
+        step="plan",
+        caller="claude_p",
+        error_text="context length exceeded",
+        delay_s=10
+    )
+    
+    try:
+        data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+        assert len(data) == 1
+        entry = data[0]
+        
+        assert entry["event"] == "token_exhausted"
+        assert entry["step"] == "plan"
+        assert entry["caller"] == "claude_p"
+        assert entry["error_text"] == "context length exceeded"
+        assert "reset_at" in entry
+        assert entry["reset_delay_seconds"] == 10
+    finally:
+        timer.cancel()
+
+
+def test_handle_token_exhaustion_reset_at_is_future(tmp_path, monkeypatch):
+    """_handle_token_exhaustion establece reset_at en el futuro."""
+    import time
+    monkeypatch.chdir(tmp_path)
+    
+    before = __import__('datetime').datetime.utcnow()
+    timer = pe._handle_token_exhaustion("test", "claude_p", "error", delay_s=100)
+    
+    try:
+        data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+        reset_at_str = data[0]["reset_at"]
+        reset_at = __import__('datetime').datetime.fromisoformat(reset_at_str)
+        
+        # reset_at debería ser aproximadamente now + 100 segundos (tolerancia: ±5 segundos)
+        expected = before + __import__('datetime').timedelta(seconds=100)
+        diff = abs((reset_at - expected).total_seconds())
+        assert diff < 5, f"reset_at muy lejano: diff={diff}s"
+    finally:
+        timer.cancel()
+
+
+def test_handle_token_exhaustion_returns_timer():
+    """_handle_token_exhaustion retorna threading.Timer."""
+    timer = pe._handle_token_exhaustion("test", "claude_p", "error", delay_s=10)
+    try:
+        assert isinstance(timer, __import__('threading').Timer)
+    finally:
+        timer.cancel()
+
+
+def test_handle_token_exhaustion_custom_delay(tmp_path, monkeypatch):
+    """_handle_token_exhaustion respeta delay_s custom."""
+    monkeypatch.chdir(tmp_path)
+    
+    timer = pe._handle_token_exhaustion(
+        step="test",
+        caller="claude_p",
+        error_text="error",
+        delay_s=7200
+    )
+    
+    try:
+        data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+        assert data[0]["reset_delay_seconds"] == 7200
+    finally:
+        timer.cancel()
+
+
+def test_claude_p_token_exhausted_writes_log(tmp_path, monkeypatch):
+    """claude_p escribe log cuando token está exhausted."""
+    monkeypatch.chdir(tmp_path)
+    
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = Mock(
+            returncode=1,
+            stdout="error",
+            stderr="context length exceeded"
+        )
+        
+        code, text, usage = pe.claude_p("test", step="plan")
+        
+        assert code == 1
+        assert Path(pe.TOKEN_LIMIT_LOG).exists()
+        data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+        assert len(data) >= 1
+        entry = next(e for e in data if e.get("event") == "token_exhausted")
+        assert entry["step"] == "plan"
+        assert entry["caller"] == "claude_p"
+
+
+def test_claude_p_success_no_log(tmp_path, monkeypatch):
+    """claude_p no crea log cuando tiene éxito."""
+    monkeypatch.chdir(tmp_path)
+    
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = Mock(
+            returncode=0,
+            stdout='{"result": "output", "usage": {}}',
+            stderr=""
+        )
+        
+        code, text, usage = pe.claude_p("test")
+        
+        assert code == 0
+        assert not Path(pe.TOKEN_LIMIT_LOG).exists()
+
+
+def test_claude_p_generic_error_no_log(tmp_path, monkeypatch):
+    """claude_p no crea log para errores genéricos."""
+    monkeypatch.chdir(tmp_path)
+    
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = Mock(
+            returncode=1,
+            stdout="error",
+            stderr="connection refused"
+        )
+        
+        code, text, usage = pe.claude_p("test")
+        
+        assert code == 1
+        assert not Path(pe.TOKEN_LIMIT_LOG).exists()
+
+
+def test_claude_p_step_defaults_to_unknown(tmp_path, monkeypatch):
+    """claude_p sin step= usa 'unknown'."""
+    monkeypatch.chdir(tmp_path)
+    
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = Mock(
+            returncode=1,
+            stdout="",
+            stderr="context window exceeded"
+        )
+        
+        code, text, usage = pe.claude_p("test")  # sin step=
+        
+        data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+        entry = data[0]
+        assert entry["step"] == "unknown"
+
+
+def test_claude_stream_token_exhausted_writes_log(tmp_path, monkeypatch):
+    """claude_stream escribe log cuando token está exhausted."""
+    monkeypatch.chdir(tmp_path)
+    
+    with patch("subprocess.Popen") as mock_popen:
+        mock_proc = MagicMock()
+        mock_proc.stdout = ["line1", "error: context window exceeded"]
+        mock_proc.returncode = 1
+        mock_popen.return_value = mock_proc
+        
+        code, events = pe.claude_stream("test", step="exec")
+        
+        assert code == 1
+        assert Path(pe.TOKEN_LIMIT_LOG).exists()
+        data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
+        entry = next(e for e in data if e.get("event") == "token_exhausted")
+        assert entry["step"] == "exec"
+        assert entry["caller"] == "claude_stream"
+
+
+def test_claude_stream_success_no_log(tmp_path, monkeypatch):
+    """claude_stream no crea log cuando tiene éxito."""
+    monkeypatch.chdir(tmp_path)
+    
+    with patch("subprocess.Popen") as mock_popen:
+        mock_proc = MagicMock()
+        mock_proc.stdout = []
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+        
+        code, events = pe.claude_stream("test")
+        
+        assert code == 0
+        assert not Path(pe.TOKEN_LIMIT_LOG).exists()

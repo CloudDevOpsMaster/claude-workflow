@@ -10,8 +10,10 @@ import sys
 import json
 import re
 import argparse
+import threading
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Callable
 
 # ─────────────────────────────────────────────
 # Config
@@ -23,6 +25,11 @@ EXEC_LOG        = "EXECUTION_LOG.md"
 MIN_COVERAGE    = 80
 MAX_PLAN_LOOPS  = 5
 MAX_TURNS       = 40
+
+# Token limit recovery
+TOKEN_LIMIT_LOG  = "TOKEN_LIMIT_LOG.json"
+TOKEN_RESET_SECS = 3600
+_token_log_lock  = threading.Lock()
 
 
 
@@ -90,13 +97,84 @@ def _is_token_exhausted(exit_code: int, output: str) -> bool:
     return any(p in output_lower for p in _PATTERNS)
 
 
+def _append_token_log(entry: dict) -> None:
+    """Agrega un entry al registro JSON de límites de tokens."""
+    with _token_log_lock:
+        log_data: list = []
+        try:
+            if Path(TOKEN_LIMIT_LOG).exists():
+                log_data = json.loads(Path(TOKEN_LIMIT_LOG).read_text())
+                if not isinstance(log_data, list):
+                    log_data = []
+        except (json.JSONDecodeError, ValueError):
+            log_data = []
+
+        log_data.append(entry)
+        Path(TOKEN_LIMIT_LOG).write_text(json.dumps(log_data, indent=2))
+
+
+def _schedule_token_reset(
+    step: str,
+    exhausted_at: str,
+    callback: Callable | None = None,
+    delay_s: float = TOKEN_RESET_SECS,
+) -> threading.Timer:
+    """Agenda un timer daemon que se dispara cuando se resetea el límite de tokens."""
+    def reset_handler():
+        try:
+            reset_entry = {
+                "event": "reset_triggered",
+                "timestamp": datetime.utcnow().isoformat(),
+                "step": step,
+                "original_exhausted_at": exhausted_at,
+            }
+            _append_token_log(reset_entry)
+            print(f"  🔄 Token limit reset para step '{step}'")
+            if callback:
+                try:
+                    callback()
+                except Exception as e:
+                    print(f"  ⚠️  Token reset callback error: {e}")
+        except Exception as e:
+            print(f"  ❌ Token reset handler error: {e}")
+
+    timer = threading.Timer(delay_s, reset_handler)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def _handle_token_exhaustion(
+    step: str,
+    caller: str,
+    error_text: str,
+    callback: Callable | None = None,
+    delay_s: float = TOKEN_RESET_SECS,
+) -> threading.Timer:
+    """Maneja agotamiento de tokens: registra el evento y agenda reset."""
+    now = datetime.utcnow()
+    reset_at = now + timedelta(seconds=delay_s)
+
+    entry = {
+        "event": "token_exhausted",
+        "timestamp": now.isoformat(),
+        "step": step,
+        "caller": caller,
+        "error_text": error_text,
+        "reset_at": reset_at.isoformat(),
+        "reset_delay_seconds": delay_s,
+    }
+
+    _append_token_log(entry)
+    timer = _schedule_token_reset(step, entry["timestamp"], callback, delay_s)
+    return timer
 
 
 # ─────────────────────────────────────────────
 # Claude helpers
 # ─────────────────────────────────────────────
 
-def claude_p(prompt: str, flags: list[str] = None) -> tuple[int, str, dict]:
+def claude_p(prompt: str, flags: list[str] = None, step: str = "unknown") -> tuple[int, str, dict]:
     """Corre claude -p, captura output completo. Retorna (exit_code, text, usage)."""
     cmd = ["claude", "-p", prompt, "--output-format", "json"] + (flags or [])
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -117,23 +195,32 @@ def claude_p(prompt: str, flags: list[str] = None) -> tuple[int, str, dict]:
     except (json.JSONDecodeError, AttributeError):
         text = output
 
+    if _is_token_exhausted(r.returncode, r.stderr + output):
+        _handle_token_exhaustion(step=step, caller="claude_p", error_text=(r.stderr + output)[:500])
+
     return r.returncode, text, usage
 
 
-def claude_stream(prompt: str, flags: list[str] = None) -> tuple[int, list]:
+def claude_stream(prompt: str, flags: list[str] = None, step: str = "unknown") -> tuple[int, list]:
     """Corre claude -p con stream-json, imprime en tiempo real."""
     cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"] + (flags or [])
     events = []
+    raw_lines = []
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for line in proc.stdout:
         line = line.strip()
         if line:
             print(line)
+            raw_lines.append(line)
             try:
                 events.append(json.loads(line))
             except json.JSONDecodeError:
                 pass
     proc.wait()
+
+    if _is_token_exhausted(proc.returncode, "\n".join(raw_lines)):
+        _handle_token_exhaustion(step=step, caller="claude_stream", error_text="\n".join(raw_lines)[:500])
+
     return proc.returncode, events
 
 
@@ -215,7 +302,8 @@ def step_plan_loop(task: str, token_acc: dict = None) -> bool:
     print("\n📝  Generando plan inicial...")
     code, _, usage = claude_p(
         PLAN_PROMPT.format(task=task, plan_file=PLAN_FILE, coverage=MIN_COVERAGE),
-        flags=["--allowedTools", "Read,Grep,Glob,Write", "--max-turns", "10"]
+        flags=["--allowedTools", "Read,Grep,Glob,Write", "--max-turns", "10"],
+        step="plan"
     )
     _accum_usage(token_acc, "plan", usage)
     if code != 0:
@@ -227,7 +315,8 @@ def step_plan_loop(task: str, token_acc: dict = None) -> bool:
 
         code, review, usage = claude_p(
             REVIEW_PROMPT.format(plan_file=PLAN_FILE, task=task),
-            flags=["--allowedTools", "Read", "--max-turns", "5"]
+            flags=["--allowedTools", "Read", "--max-turns", "5"],
+            step="plan_review"
         )
         _accum_usage(token_acc, "plan", usage)
         if code != 0:
@@ -250,7 +339,8 @@ def step_plan_loop(task: str, token_acc: dict = None) -> bool:
         print(f"🔧  Refinando plan...")
         code, _, usage = claude_p(
             REFINE_PROMPT.format(plan_file=PLAN_FILE, feedback=feedback),
-            flags=["--allowedTools", "Read,Write", "--max-turns", "8"]
+            flags=["--allowedTools", "Read,Write", "--max-turns", "8"],
+            step="plan_refine"
         )
         _accum_usage(token_acc, "plan", usage)
         if code != 0:
@@ -294,7 +384,8 @@ def step_execute() -> bool:
 
     code, _ = claude_stream(
         EXEC_PROMPT.format(plan_file=PLAN_FILE, log_file=EXEC_LOG),
-        flags=["--dangerously-skip-permissions", "--max-turns", str(MAX_TURNS)]
+        flags=["--dangerously-skip-permissions", "--max-turns", str(MAX_TURNS)],
+        step="exec"
     )
 
     if code != 0:
@@ -400,7 +491,8 @@ def step_tests() -> bool:
     print("\n🧪  Generando tests...")
     code, _ = claude_stream(
         TESTS_PROMPT.format(coverage=MIN_COVERAGE),
-        flags=["--dangerously-skip-permissions", "--max-turns", "20"]
+        flags=["--dangerously-skip-permissions", "--max-turns", "20"],
+        step="tests"
     )
     if code != 0:
         print("❌  Error generando tests")
@@ -431,7 +523,8 @@ def step_tests() -> bool:
                 target=MIN_COVERAGE,
                 report=report[-3000:]  # últimas líneas del reporte
             ),
-            flags=["--dangerously-skip-permissions", "--max-turns", "15"]
+            flags=["--dangerously-skip-permissions", "--max-turns", "15"],
+            step="tests_boost"
         )
 
     print(f"⚠  No se alcanzó {MIN_COVERAGE}% de coverage después de 3 intentos")
@@ -477,7 +570,8 @@ def step_commit(task: str, branch: str, coverage: float, token_acc: dict = None)
             plan_summary=plan_summary,
             coverage=f"{coverage:.1f}"
         ),
-        flags=["--allowedTools", "Read", "--max-turns", "3"]
+        flags=["--allowedTools", "Read", "--max-turns", "3"],
+        step="commit"
     )
     _accum_usage(token_acc, "commit", usage)
 
@@ -613,7 +707,8 @@ def _main_steps(args, branch, coverage_achieved, results):
         # Generar plan simple sin revisión
         _, _, usage = claude_p(
             PLAN_PROMPT.format(task=args.task, plan_file=PLAN_FILE, coverage=MIN_COVERAGE),
-            flags=["--allowedTools", "Read,Grep,Glob,Write", "--max-turns", "10"]
+            flags=["--allowedTools", "Read,Grep,Glob,Write", "--max-turns", "10"],
+            step="plan"
         )
         _accum_usage(token_acc, "plan", usage)
     else:
