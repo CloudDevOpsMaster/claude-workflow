@@ -677,6 +677,12 @@ def _get_prompt(name: str, loader: Optional["PromptLoader"]) -> str:
     return getattr(_m, name)
 
 
+def _escape_format_value(value: Any) -> str:
+    """Escapa { y } en un valor para que no interfiera con str.format()."""
+    s = str(value)
+    return s.replace("{", "{{").replace("}", "}}")
+
+
 def _run_analyst(task: str, agents_dir: Path, resume_id: Optional[str] = None,
                  project_ctx: str = "",
                  token_store: Optional["TokenStore"] = None,
@@ -690,7 +696,7 @@ def _run_analyst(task: str, agents_dir: Path, resume_id: Optional[str] = None,
         flags += ["--resume", resume_id]
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        _prepend_context(_get_prompt("ANALYST_PROMPT", prompt_loader).format(task=task, output=output_file), project_ctx),
+        _prepend_context(_get_prompt("ANALYST_PROMPT", prompt_loader).format(task=_escape_format_value(task), output=_escape_format_value(output_file)), project_ctx),
         flags=flags,
     )
     if token_store:
@@ -718,7 +724,7 @@ def _run_architect(task: str, agents_dir: Path, resume_id: Optional[str] = None,
         flags += ["--resume", resume_id]
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        _prepend_context(_get_prompt("ARCHITECT_PROMPT", prompt_loader).format(task=task, output=output_file), project_ctx),
+        _prepend_context(_get_prompt("ARCHITECT_PROMPT", prompt_loader).format(task=_escape_format_value(task), output=_escape_format_value(output_file)), project_ctx),
         flags=flags,
     )
     if token_store:
@@ -751,7 +757,7 @@ def _run_qa_planner(task: str, agents_dir: Path, resume_id: Optional[str] = None
         if project_ctx else ""
     )
     code, text, sid, usage = claude_p_with_session(
-        _prepend_context(_get_prompt("QA_PLANNER_PROMPT", prompt_loader).format(task=task, output=output_file), ctx_note),
+        _prepend_context(_get_prompt("QA_PLANNER_PROMPT", prompt_loader).format(task=_escape_format_value(task), output=_escape_format_value(output_file)), ctx_note),
         flags=flags,
     )
     if token_store:
@@ -898,11 +904,11 @@ def phase2_synthesize(
     code, text, sid, usage = claude_p_with_session(
         _prepend_context(
             _get_prompt("SYNTHESIZER_PROMPT", prompt_loader).format(
-                task=task,
-                analyst_file=agents_dir / "analysis" / "ANALYST.md",
-                architect_file=agents_dir / "analysis" / "ARCHITECT.md",
-                qa_file=agents_dir / "analysis" / "QA_PLANNER.md",
-                plan_file=plan_file,
+                task=_escape_format_value(task),
+                analyst_file=_escape_format_value(agents_dir / "analysis" / "ANALYST.md"),
+                architect_file=_escape_format_value(agents_dir / "analysis" / "ARCHITECT.md"),
+                qa_file=_escape_format_value(agents_dir / "analysis" / "QA_PLANNER.md"),
+                plan_file=_escape_format_value(plan_file),
                 coverage=coverage,
             ),
             project_ctx,
@@ -993,10 +999,10 @@ def _run_implementer(
     code, text, sid, usage = claude_p_with_session(
         _prepend_context(
             _get_prompt("IMPLEMENTER_PROMPT", prompt_loader).format(
-                task=task,
-                plan_file=agents_dir / "PLAN.md",
-                architect_file=agents_dir / "analysis" / "ARCHITECT.md",
-                log_file=log_file,
+                task=_escape_format_value(task),
+                plan_file=_escape_format_value(agents_dir / "PLAN.md"),
+                architect_file=_escape_format_value(agents_dir / "analysis" / "ARCHITECT.md"),
+                log_file=_escape_format_value(log_file),
             ),
             project_ctx,
         ),
@@ -1108,20 +1114,20 @@ def _run_test_writer(
     if dev_log_files:
         impl_logs_str = "\n".join(f"  - {p}" for p in dev_log_files)
         prompt = _get_prompt("TEST_WRITER_PROMPT_MULTI", prompt_loader).format(
-            task=task,
-            plan_file=agents_dir / "PLAN.md",
-            qa_file=agents_dir / "analysis" / "QA_PLANNER.md",
-            impl_logs=impl_logs_str,
-            log_file=log_file,
+            task=_escape_format_value(task),
+            plan_file=_escape_format_value(agents_dir / "PLAN.md"),
+            qa_file=_escape_format_value(agents_dir / "analysis" / "QA_PLANNER.md"),
+            impl_logs=_escape_format_value(impl_logs_str),
+            log_file=_escape_format_value(log_file),
             coverage=coverage,
         )
     else:
         prompt = _get_prompt("TEST_WRITER_PROMPT", prompt_loader).format(
-            task=task,
-            plan_file=agents_dir / "PLAN.md",
-            qa_file=agents_dir / "analysis" / "QA_PLANNER.md",
-            impl_log=agents_dir / "implementation" / "IMPLEMENTER.md",
-            log_file=log_file,
+            task=_escape_format_value(task),
+            plan_file=_escape_format_value(agents_dir / "PLAN.md"),
+            qa_file=_escape_format_value(agents_dir / "analysis" / "QA_PLANNER.md"),
+            impl_log=_escape_format_value(agents_dir / "implementation" / "IMPLEMENTER.md"),
+            log_file=_escape_format_value(log_file),
             coverage=coverage,
         )
 
@@ -1155,11 +1161,11 @@ def _run_coordinator(
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
         _get_prompt("COORDINATOR_PROMPT", prompt_loader).format(
-            task=task,
+            task=_escape_format_value(task),
             n_agents=n_agents,
-            plan_file=agents_dir / "PLAN.md",
-            tasks_dir=tasks_dir,
-            log_file=log_file,
+            plan_file=_escape_format_value(agents_dir / "PLAN.md"),
+            tasks_dir=_escape_format_value(tasks_dir),
+            log_file=_escape_format_value(log_file),
         ),
         flags=flags,
     )
@@ -1194,12 +1200,12 @@ def _run_dev_agent(
     code, text, sid, usage = claude_p_with_session(
         _prepend_context(
             _get_prompt("DEV_AGENT_PROMPT", prompt_loader).format(
-                task=task,
-                task_file=task_file,
+                task=_escape_format_value(task),
+                task_file=_escape_format_value(task_file),
                 index=index,
                 n_agents=n_agents,
-                architect_file=agents_dir / "analysis" / "ARCHITECT.md",
-                log_file=log_file,
+                architect_file=_escape_format_value(agents_dir / "analysis" / "ARCHITECT.md"),
+                log_file=_escape_format_value(log_file),
             ),
             project_ctx,
         ),
@@ -1384,12 +1390,12 @@ def phase4_integrate(
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
         _get_prompt("INTEGRATOR_PROMPT", prompt_loader).format(
-            task=task,
-            agents_dir=agents_dir,
-            backend_dir=backend_dir,
+            task=_escape_format_value(task),
+            agents_dir=_escape_format_value(agents_dir),
+            backend_dir=_escape_format_value(backend_dir),
             coverage=coverage,
             max_attempts=3,
-            log_file=log_file,
+            log_file=_escape_format_value(log_file),
         ),
         flags=flags,
     )
@@ -1484,10 +1490,10 @@ def phase5_commit(
 
     code, text, sid, usage = claude_p_with_session(
         _get_prompt("COMMITTER_PROMPT", prompt_loader).format(
-            task=task,
-            branch=branch,
-            plan_file=agents_dir / "PLAN.md",
-            integrator_log=agents_dir / "integration" / "INTEGRATOR.md",
+            task=_escape_format_value(task),
+            branch=_escape_format_value(branch),
+            plan_file=_escape_format_value(agents_dir / "PLAN.md"),
+            integrator_log=_escape_format_value(agents_dir / "integration" / "INTEGRATOR.md"),
             coverage=f"{coverage:.1f}",
         ),
         flags=flags,

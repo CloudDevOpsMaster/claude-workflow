@@ -1,0 +1,47 @@
+[
+  {
+    "event": "reset_triggered",
+    "timestamp": "2026-03-29T18:08:07.332249",
+    "step": "test",
+    "original_exhausted_at": "2026-03-29T14:00:00"
+  },
+  {
+    "event": "token_exhausted",
+    "timestamp": "2026-03-29T18:08:07.474273",
+    "step": "test",
+    "caller": "claude_p",
+    "error_text": "error",
+    "reset_at": "2026-03-29T18:08:17.474273",
+    "reset_delay_seconds": 10
+  },
+  {
+    "event": "reset_triggered",
+    "timestamp": "2026-03-29T18:08:27.081603",
+    "step": "test",
+    "original_exhausted_at": "2026-03-29T14:00:00"
+  },
+  {
+    "event": "token_exhausted",
+    "timestamp": "2026-03-29T18:08:27.242106",
+    "step": "test",
+    "caller": "claude_p",
+    "error_text": "error",
+    "reset_at": "2026-03-29T18:08:37.242106",
+    "reset_delay_seconds": 10
+  },
+  {
+    "event": "reset_triggered",
+    "timestamp": "2026-03-29T18:08:49.573202",
+    "step": "test",
+    "original_exhausted_at": "2026-03-29T14:00:00"
+  },
+  {
+    "event": "token_exhausted",
+    "timestamp": "2026-03-29T18:08:49.706878",
+    "step": "test",
+    "caller": "claude_p",
+    "error_text": "error",
+    "reset_at": "2026-03-29T18:08:59.706878",
+    "reset_delay_seconds": 10
+  }
+]
