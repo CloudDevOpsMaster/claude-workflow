@@ -24,11 +24,6 @@ MIN_COVERAGE    = 80
 MAX_PLAN_LOOPS  = 5
 MAX_TURNS       = 40
 
-# Fallback a opencode cuando Claude supera el context window
-_ONLY_OPENCODE: bool = False # Add this
-_OPENCODE_FALLBACK: bool = False
-_OPENCODE_MODEL: str = "anthropic/claude-sonnet-4-5-20251001"
-_OPENCODE_BIN: str = "/home/dev/.opencode/bin/opencode"
 
 
 # ─────────────────────────────────────────────
@@ -95,52 +90,6 @@ def _is_token_exhausted(exit_code: int, output: str) -> bool:
     return any(p in output_lower for p in _PATTERNS)
 
 
-def _call_opencode(prompt: str) -> tuple[int, str, None, dict]:
-    """
-    Llama a opencode via Python SDK (opencode-ai) si está disponible y
-    opencode serve está corriendo en localhost:4096.
-    Si no, hace fallback a 'opencode run' via subprocess.
-    Retorna 4-tupla (exit_code, text, None, {}) para compatibilidad con claude_p_with_session.
-    """
-    try:
-        from opencode_ai import Opencode  # type: ignore
-
-        parts = _OPENCODE_MODEL.split("/", 1)
-        provider_id = parts[0]
-        model_id = parts[1] if len(parts) > 1 else parts[0]
-
-        client = Opencode(base_url="http://localhost:4096", timeout=300.0)
-        session = client.session.create()
-        msg = client.session.chat(
-            session.id,
-            model_id=model_id,
-            provider_id=provider_id,
-            parts=[{"type": "text", "text": prompt}],
-        )
-
-        if getattr(msg, "error", None):
-            return 1, str(msg.error), None, {}
-
-        messages = client.session.messages(session.id)
-        texts = [
-            part.text
-            for item in messages
-            for part in item.parts
-            if getattr(part, "type", None) == "text" and hasattr(part, "text")
-        ]
-        return 0, "\n".join(texts), None, {}
-
-    except ImportError:
-        pass  # SDK no instalado — usar subprocess
-    except Exception as exc:
-        return 1, str(exc), None, {}
-
-    # Fallback: opencode run via subprocess
-    if not Path(_OPENCODE_BIN).exists():
-        return 1, "opencode no encontrado en " + _OPENCODE_BIN, None, {}
-    cmd = [_OPENCODE_BIN, "run", "--model", _OPENCODE_MODEL, prompt]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    return r.returncode, r.stdout.strip() or r.stderr.strip(), None, {}
 
 
 # ─────────────────────────────────────────────
@@ -149,11 +98,6 @@ def _call_opencode(prompt: str) -> tuple[int, str, None, dict]:
 
 def claude_p(prompt: str, flags: list[str] = None) -> tuple[int, str, dict]:
     """Corre claude -p, captura output completo. Retorna (exit_code, text, usage)."""
-    if _ONLY_OPENCODE:
-        print(f"  🤖 Usando opencode (--only-opencode activo)...")
-        oc, ot, _, _ = _call_opencode(prompt)
-        return oc, ot, {} # Return empty usage dict for now
-
     cmd = ["claude", "-p", prompt, "--output-format", "json"] + (flags or [])
     r = subprocess.run(cmd, capture_output=True, text=True)
     output = r.stdout.strip()
@@ -173,24 +117,11 @@ def claude_p(prompt: str, flags: list[str] = None) -> tuple[int, str, dict]:
     except (json.JSONDecodeError, AttributeError):
         text = output
 
-    if r.returncode != 0 and _OPENCODE_FALLBACK and _is_token_exhausted(r.returncode, text):
-        print(f"  ⚠️  Token limit → opencode ({_OPENCODE_MODEL})...")
-        oc, ot, _, _ = _call_opencode(prompt)
-        return oc, ot, {}
-
     return r.returncode, text, usage
 
 
 def claude_stream(prompt: str, flags: list[str] = None) -> tuple[int, list]:
     """Corre claude -p con stream-json, imprime en tiempo real."""
-    if _ONLY_OPENCODE:
-        print(f"  🤖 Usando opencode (--only-opencode activo, stream emulado)...")
-        oc, ot, _, _ = _call_opencode(prompt)
-        print(ot) # Print the whole output at once
-        # For stream compatibility, return a single event with the output
-        return oc, [{"type": "assistant", "message": {"content": [{"type": "text", "text": ot}]}}]
-
-
     cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"] + (flags or [])
     events = []
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -618,7 +549,7 @@ def timestamp_branch(task: str) -> str:
 # ─────────────────────────────────────────────
 
 def main():
-    global MIN_COVERAGE, _OPENCODE_FALLBACK, _OPENCODE_MODEL, _ONLY_OPENCODE
+    global MIN_COVERAGE
     parser = argparse.ArgumentParser(
         description="Branch → Plan (loop) → Implement → Tests >80% → Commit",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -637,20 +568,10 @@ Ejemplos:
     parser.add_argument("--skip-plan-loop",   action="store_true", help="Genera plan sin loop de revisión")
     parser.add_argument("--skip-exec",        action="store_true", help="Saltar ejecución del plan")
     parser.add_argument("--skip-tests",       action="store_true", help="Saltar generación de tests")
-    parser.add_argument("--opencode-fallback", action="store_true", default=False,
-                        help="Usar opencode como fallback si Claude supera el context window.")
-    parser.add_argument("--opencode-model",   default=_OPENCODE_MODEL, metavar="MODEL",
-                        help="Modelo a usar en opencode (formato provider/model).")
-    parser.add_argument("--only-opencode", action="store_true", default=False,
-                        help="Usar solo opencode, sin intentar con Claude.")
     args = parser.parse_args()
 
     # Ajustar config global
     MIN_COVERAGE = args.coverage
-    _OPENCODE_FALLBACK = args.opencode_fallback
-    if args.opencode_model != _OPENCODE_MODEL:
-        _OPENCODE_MODEL = args.opencode_model
-    _ONLY_OPENCODE = args.only_opencode
 
     branch = args.branch or timestamp_branch(args.task)
 

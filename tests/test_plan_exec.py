@@ -493,9 +493,6 @@ def test_main_with_task(mock_step, tmp_path, monkeypatch):
     parser.add_argument("--skip-plan-loop", action="store_true")
     parser.add_argument("--skip-exec", action="store_true")
     parser.add_argument("--skip-tests", action="store_true")
-    parser.add_argument("--opencode-fallback", action="store_true")
-    parser.add_argument("--opencode-model", default="anthropic/claude-sonnet")
-    parser.add_argument("--only-opencode", action="store_true")
 
     args = parser.parse_args(["-t", "My Task"])
     assert args.task == "My Task"
@@ -600,18 +597,6 @@ def test_step_tests_stream_error(mock_stream, tmp_path, monkeypatch):
 
 
 # ─────────────────────────────────────────────
-# Tests: _call_opencode (fallback)
-# ─────────────────────────────────────────────
-
-def test_call_opencode_import_error():
-    """_call_opencode si importError → subprocess fallback."""
-    # Al no tener opencode-ai instalado, debería intentar subprocess
-    code, text, _, _ = pe._call_opencode("test prompt")
-    # Sin opencode binary, puede retornar 0 o error — comportamiento indeterminado
-    assert code in (0, 1) or isinstance(text, str)
-
-
-# ─────────────────────────────────────────────
 # Tests: confirm (user input)
 # ─────────────────────────────────────────────
 
@@ -687,54 +672,6 @@ def test_accum_usage_large_numbers():
     pe._accum_usage(acc, "plan", usage)
     assert acc["plan"]["input"] == 100000
     assert acc["_total"]["cost_usd"] == 1.50
-
-
-# ─────────────────────────────────────────────
-# Tests: claude_p con _OPENCODE_FALLBACK
-# ─────────────────────────────────────────────
-
-@patch("claude_workflow.plan_exec.subprocess.run")
-@patch("claude_workflow.plan_exec._call_opencode")
-def test_claude_p_opencode_fallback(mock_opencode, mock_run):
-    """claude_p usa opencode fallback si detecta token exhausted."""
-    # Primera llamada falla con token limit
-    mock_run.return_value = Mock(
-        returncode=1,
-        stdout="error: token limit exceeded",
-        stderr=""
-    )
-    # Fallback a opencode
-    mock_opencode.return_value = (0, "opencode response", None, {})
-
-    # Activar fallback
-    original_fallback = pe._OPENCODE_FALLBACK
-    original_patterns = pe._OPENCODE_FALLBACK
-    try:
-        pe._OPENCODE_FALLBACK = True
-        code, text, usage = pe.claude_p("test prompt")
-        # Debería fallar en claude y luego usar opencode
-        assert code == 1 or code == 0
-    finally:
-        pe._OPENCODE_FALLBACK = original_fallback
-
-
-# ─────────────────────────────────────────────
-# Tests: claude_p con _ONLY_OPENCODE
-# ─────────────────────────────────────────────
-
-@patch("claude_workflow.plan_exec._call_opencode")
-def test_claude_p_only_opencode(mock_opencode):
-    """claude_p con _ONLY_OPENCODE=True → usa solo opencode."""
-    mock_opencode.return_value = (0, "opencode output", None, {})
-    original = pe._ONLY_OPENCODE
-    try:
-        pe._ONLY_OPENCODE = True
-        code, text, usage = pe.claude_p("test prompt")
-        assert code == 0
-        assert text == "opencode output"
-        mock_opencode.assert_called_once()
-    finally:
-        pe._ONLY_OPENCODE = original
 
 
 # ─────────────────────────────────────────────
@@ -1058,18 +995,6 @@ def test_step_tests_single_attempt_success(mock_stream, mock_tests, tmp_path, mo
     assert mock_tests.call_count >= 1
 
 
-# ─────────────────────────────────────────────
-# Tests for _call_opencode variations
-# ─────────────────────────────────────────────
-
-def test_call_opencode_without_sdk():
-    """_call_opencode tries subprocess when SDK is not installed."""
-    # SDK is not installed in test environment, should try subprocess
-    code, text, _, _ = pe._call_opencode("test prompt")
-    # Without opencode binary, puede retornar 0 o error — asegurar que retorna tuple
-    assert isinstance(code, int) and isinstance(text, str)
-
-
 @patch("claude_workflow.plan_exec.subprocess.run")
 def test_claude_p_with_all_usage_fields(mock_run):
     """claude_p extracts all usage fields from JSON."""
@@ -1124,9 +1049,6 @@ def test_main_parses_task_argument():
     parser.add_argument("--skip-plan-loop", action="store_true")
     parser.add_argument("--skip-exec", action="store_true")
     parser.add_argument("--skip-tests", action="store_true")
-    parser.add_argument("--opencode-fallback", action="store_true")
-    parser.add_argument("--opencode-model", default="test")
-    parser.add_argument("--only-opencode", action="store_true")
 
     args = parser.parse_args(["-t", "My Task"])
     assert args.task == "My Task"
@@ -1329,37 +1251,6 @@ def test_main_with_coverage_argument(tmp_path, monkeypatch):
             assert mock_main_steps.called
 
 
-def test_main_with_opencode_fallback_flag(tmp_path, monkeypatch):
-    """main() enables opencode fallback from flag."""
-    monkeypatch.chdir(tmp_path)
-    test_args = ["script.py", "--task", "Test", "--opencode-fallback"]
-
-    with patch("sys.argv", test_args):
-        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
-            try:
-                pe.main()
-            except SystemExit:
-                pass
-
-            # Check that _OPENCODE_FALLBACK was set
-            assert mock_main_steps.called
-
-
-def test_main_with_only_opencode_flag(tmp_path, monkeypatch):
-    """main() enables only opencode mode from flag."""
-    monkeypatch.chdir(tmp_path)
-    test_args = ["script.py", "--task", "Test", "--only-opencode"]
-
-    with patch("sys.argv", test_args):
-        with patch("claude_workflow.plan_exec._main_steps") as mock_main_steps:
-            try:
-                pe.main()
-            except SystemExit:
-                pass
-
-            assert mock_main_steps.called
-
-
 def test_main_with_skip_plan_loop(tmp_path, monkeypatch):
     """main() respects --skip-plan-loop flag."""
     monkeypatch.chdir(tmp_path)
@@ -1422,65 +1313,6 @@ def test_main_with_auto_flag(tmp_path, monkeypatch):
 
             args = mock_main_steps.call_args[0][0]
             assert args.auto is True
-
-
-# ─────────────────────────────────────────────
-# Tests para claude_p con flags _OPENCODE_*
-# ─────────────────────────────────────────────
-
-def test_claude_p_with_only_opencode_flag():
-    """claude_p uses opencode when _ONLY_OPENCODE is True."""
-    original_flag = pe._ONLY_OPENCODE
-    try:
-        pe._ONLY_OPENCODE = True
-        with patch("claude_workflow.plan_exec._call_opencode") as mock_opencode:
-            mock_opencode.return_value = (0, "test output", None, {})
-            code, text, usage = pe.claude_p("test prompt")
-
-            assert mock_opencode.called
-            assert text == "test output"
-    finally:
-        pe._ONLY_OPENCODE = original_flag
-
-
-def test_claude_p_with_opencode_fallback_on_token_exhausted():
-    """claude_p falls back to opencode on token exhaustion."""
-    original_fallback = pe._OPENCODE_FALLBACK
-    try:
-        pe._OPENCODE_FALLBACK = True
-        with patch("subprocess.run") as mock_run:
-            with patch("claude_workflow.plan_exec._is_token_exhausted", return_value=True):
-                with patch("claude_workflow.plan_exec._call_opencode") as mock_opencode:
-                    # Claude fails with token exhausted
-                    mock_run.return_value = MagicMock(
-                        returncode=1,
-                        stdout="",
-                        stderr="context length exceeded"
-                    )
-                    mock_opencode.return_value = (0, "opencode output", None, {})
-
-                    code, text, usage = pe.claude_p("test prompt")
-
-                    assert mock_opencode.called
-                    assert text == "opencode output"
-    finally:
-        pe._OPENCODE_FALLBACK = original_fallback
-
-
-def test_claude_stream_with_only_opencode():
-    """claude_stream uses opencode when _ONLY_OPENCODE is True."""
-    original_flag = pe._ONLY_OPENCODE
-    try:
-        pe._ONLY_OPENCODE = True
-        with patch("claude_workflow.plan_exec._call_opencode") as mock_opencode:
-            with patch("builtins.print"):  # Suppress output
-                mock_opencode.return_value = (0, "test output", None, {})
-                code, events = pe.claude_stream("test prompt")
-
-                assert mock_opencode.called
-                assert code == 0
-    finally:
-        pe._ONLY_OPENCODE = original_flag
 
 
 def test_is_token_exhausted_detects_patterns():
