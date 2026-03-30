@@ -252,18 +252,20 @@ class PromptLoader:
         return loaded
 
     def _validate(self, name: str, template: str, expected: set) -> None:
-        """Advierte si un prompt custom le faltan placeholders esperados."""
-        import string
+        """Advierte si un prompt custom le faltan variables Jinja2 esperadas."""
         try:
-            actual = {f for _, f, _, _ in string.Formatter().parse(template) if f is not None}
-        except (ValueError, KeyError):
-            self._logger.warning(f"PromptLoader: no se pudo parsear '{name}'")
+            from jinja2 import Environment, meta
+            env = Environment()
+            ast = env.parse(template)
+            actual = meta.find_undeclared_variables(ast)
+        except Exception as e:
+            self._logger.warning(f"PromptLoader: no se pudo parsear '{name}': {e}")
             return
         missing = expected - actual
         if missing:
             self._logger.warning(
-                f"PromptLoader: '{name}' le faltan placeholders {missing} — "
-                "puede causar KeyError en ejecución"
+                f"PromptLoader: '{name}' le faltan variables {missing} — "
+                "puede causar TemplateError en ejecución"
             )
 
     def get(self, name: str) -> str:
@@ -553,9 +555,12 @@ def _init_agents_dir(agents_dir: Path, task: str) -> None:
         tokens_file.write_text("{}")
 
 
-def init_prompts_dir(repo_root: Path = None) -> None:
-    """Crea .claude-workflow/prompts/ con un .md por agente (prompts defaults).
-    No sobreescribe archivos existentes.
+def init_prompts_dir(repo_root: Path = None, force: bool = False) -> None:
+    """Crea o actualiza .claude-workflow/prompts/ con un .md por agente (prompts defaults).
+
+    Args:
+        repo_root: Raíz del repositorio (default: cwd)
+        force: Si True, sobreescribe archivos existentes. Si False, los deja intactos.
     """
     root = repo_root or Path.cwd()
     prompts_dir = root / _PROMPTS_DIR
@@ -565,36 +570,46 @@ def init_prompts_dir(repo_root: Path = None) -> None:
 
     created = []
     skipped = []
+    updated = []
     for const_name, (filename, placeholders) in _PROMPT_FILES.items():
         dest = prompts_dir / filename
-        if dest.exists():
+        default_text = getattr(_m, const_name, "")
+
+        if dest.exists() and not force:
             skipped.append(filename)
             continue
-        default_text = getattr(_m, const_name, "")
-        dest.write_text(default_text.strip() + "\n", encoding="utf-8")
-        created.append(filename)
 
-    # README con tabla de placeholders
+        dest.write_text(default_text.strip() + "\n", encoding="utf-8")
+        if dest.exists() and force:
+            updated.append(filename)
+        else:
+            created.append(filename)
+
+    # README con tabla de variables (usar sintaxis Jinja2)
     readme = prompts_dir / "README.md"
-    if not readme.exists():
+    if not readme.exists() or force:
         lines = [
             "# Prompts de claude-workflow\n\n",
             "Edita cada archivo `.md` para personalizar el prompt del agente correspondiente.\n\n",
-            "**Importante:** Conserva todos los `{placeholders}` listados a continuación. Si falta alguno, se emitirá una advertencia pero el prompt seguirá cargándose.\n\n",
-            "Ejecuta `claude-iterative --init` de nuevo para restaurar archivos faltantes (no sobreescribe existentes).\n\n",
-            "## Placeholders por archivo\n\n",
-            "| Archivo | Placeholders requeridos |\n",
+            "**Importante:** Conserva todas las variables Jinja2 `{{ variable }}` listadas a continuación. "
+            "Si falta alguna, se emitirá una advertencia pero el prompt seguirá cargándose.\n\n",
+            "Para actualizar los prompts a la última versión del módulo, ejecuta: `claude-iterative --update-prompts`\n\n",
+            "## Variables por archivo\n\n",
+            "| Archivo | Variables requeridas |\n",
             "|---|---|\n",
         ]
         for _, (filename, phs) in _PROMPT_FILES.items():
-            ph_str = ", ".join(f"`{{{p}}}`" for p in sorted(phs))
+            ph_str = ", ".join(f"`{{{{{p}}}}}`" for p in sorted(phs))
             lines.append(f"| `{filename}` | {ph_str} |\n")
         readme.write_text("".join(lines), encoding="utf-8")
-        created.append("README.md")
+        if "README.md" not in created:
+            created.append("README.md")
 
     print(f"✓ Directorio: {prompts_dir}")
     if created:
-        print(f"  Creados  : {', '.join(created)}")
+        print(f"  Creados: {', '.join(created)}")
+    if updated:
+        print(f"  Actualizados: {', '.join(updated)}")
     if skipped:
         print(f"  Existentes (no modificados): {', '.join(skipped)}")
     print("\nEdita los .md para personalizar los prompts. Los cambios aplican en el próximo run.\n")
@@ -1892,13 +1907,19 @@ Ejemplos:
                         help="Dev agents en paralelo en Fase 3 (default: 1 = IMPLEMENTER clásico)")
     parser.add_argument("--init",           action="store_true",
                         help="Inicializar .claude-workflow/prompts/ con prompts editables")
+    parser.add_argument("--update-prompts", action="store_true", dest="update_prompts",
+                        help="Actualizar prompts en .claude-workflow/prompts/ con los defaults del módulo (sobreescribe existentes)")
     parser.add_argument("--prompts-dir",    default="", metavar="PATH",
                         help="Ruta a directorio con .md de prompts (default: .claude-workflow/prompts/ en cwd)")
     args = parser.parse_args()
 
-    # ── Manejar --init ──
+    # ── Manejar --init y --update-prompts ──
     if args.init:
         init_prompts_dir()
+        return
+
+    if args.update_prompts:
+        init_prompts_dir(force=True)
         return
 
     if not args.task and not args.resume:
