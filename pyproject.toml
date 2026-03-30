@@ -7,7 +7,7 @@ name = "claude-workflow"
 version = "0.1.0"
 description = "Multi-agent parallel workflow CLI tools powered by Claude Code"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["jinja2>=3.0"]
 
 [project.scripts]
 claude-iterative = "claude_workflow.iterative:main"
