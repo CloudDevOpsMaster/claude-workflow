@@ -24,6 +24,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from jinja2 import Template
+
 # Importar utilidades de plan_exec
 from claude_workflow import plan_exec as base
 
@@ -616,9 +618,9 @@ def phase0_branch(branch: str) -> bool:
 ANALYST_PROMPT = """
 Eres un analista de software senior. Analiza el proyecto actual y la tarea:
 
-TAREA: {task}
+TAREA: {{ task }}
 
-Lee el código fuente, identifica los módulos relevantes y escribe tu análisis en {output}.
+Lee el código fuente, identifica los módulos relevantes y escribe tu análisis en {{ output }}.
 
 Cubre:
 1. Módulos afectados (rutas exactas)
@@ -632,9 +634,9 @@ Solo análisis. No implementes nada.
 ARCHITECT_PROMPT = """
 Eres un arquitecto de software. Analiza el proyecto y la tarea:
 
-TAREA: {task}
+TAREA: {{ task }}
 
-Lee el código, diseña la arquitectura del cambio y escribe en {output}.
+Lee el código, diseña la arquitectura del cambio y escribe en {{ output }}.
 
 Incluye:
 1. Patrón de diseño recomendado
@@ -648,9 +650,9 @@ Solo arquitectura. No implementes nada.
 QA_PLANNER_PROMPT = """
 Eres un QA Engineer senior. Analiza los tests existentes y la tarea:
 
-TAREA: {task}
+TAREA: {{ task }}
 
-Lee los tests actuales y escribe tu plan de QA en {output}.
+Lee los tests actuales y escribe tu plan de QA en {{ output }}.
 
 Incluye:
 1. Tests existentes relevantes
@@ -677,10 +679,10 @@ def _get_prompt(name: str, loader: Optional["PromptLoader"]) -> str:
     return getattr(_m, name)
 
 
-def _escape_format_value(value: Any) -> str:
-    """Escapa { y } en un valor para que no interfiera con str.format()."""
-    s = str(value)
-    return s.replace("{", "{{").replace("}", "}}")
+def _render_prompt(template_str: str, **kwargs) -> str:
+    """Renderiza una plantilla Jinja2 con parámetros seguros."""
+    template = Template(template_str)
+    return template.render(**kwargs)
 
 
 def _run_analyst(task: str, agents_dir: Path, resume_id: Optional[str] = None,
@@ -696,7 +698,7 @@ def _run_analyst(task: str, agents_dir: Path, resume_id: Optional[str] = None,
         flags += ["--resume", resume_id]
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        _prepend_context(_get_prompt("ANALYST_PROMPT", prompt_loader).format(task=_escape_format_value(task), output=_escape_format_value(output_file)), project_ctx),
+        _prepend_context(_render_prompt(_get_prompt("ANALYST_PROMPT", prompt_loader), task=task, output=output_file), project_ctx),
         flags=flags,
     )
     if token_store:
@@ -724,7 +726,7 @@ def _run_architect(task: str, agents_dir: Path, resume_id: Optional[str] = None,
         flags += ["--resume", resume_id]
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        _prepend_context(_get_prompt("ARCHITECT_PROMPT", prompt_loader).format(task=_escape_format_value(task), output=_escape_format_value(output_file)), project_ctx),
+        _prepend_context(_render_prompt(_get_prompt("ARCHITECT_PROMPT", prompt_loader), task=task, output=output_file), project_ctx),
         flags=flags,
     )
     if token_store:
@@ -757,7 +759,7 @@ def _run_qa_planner(task: str, agents_dir: Path, resume_id: Optional[str] = None
         if project_ctx else ""
     )
     code, text, sid, usage = claude_p_with_session(
-        _prepend_context(_get_prompt("QA_PLANNER_PROMPT", prompt_loader).format(task=_escape_format_value(task), output=_escape_format_value(output_file)), ctx_note),
+        _prepend_context(_render_prompt(_get_prompt("QA_PLANNER_PROMPT", prompt_loader), task=task, output=output_file), ctx_note),
         flags=flags,
     )
     if token_store:
@@ -834,16 +836,16 @@ def phase1_analysis(
 SYNTHESIZER_PROMPT = """
 Eres un tech lead. Sintetiza los análisis de tus colegas y genera un plan unificado.
 
-TAREA: {task}
+TAREA: {{ task }}
 
 Lee los análisis en:
-- {analyst_file}
-- {architect_file}
-- {qa_file}
+- {{ analyst_file }}
+- {{ architect_file }}
+- {{ qa_file }}
 
-Genera un plan de implementación en {plan_file} con este formato:
+Genera un plan de implementación en {{ plan_file }} con este formato:
 
-# Plan: {task}
+# Plan: {{ task }}
 
 ## Objetivo
 <una línea clara>
@@ -866,7 +868,7 @@ Genera un plan de implementación en {plan_file} con este formato:
 - ...
 
 ## Criterios de Aceptación
-- [ ] Coverage > {coverage}%
+- [ ] Coverage > {{ coverage }}%
 - [ ] Sin errores de lint
 - [ ] <criterio de la tarea>
 """
@@ -903,12 +905,12 @@ def phase2_synthesize(
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
         _prepend_context(
-            _get_prompt("SYNTHESIZER_PROMPT", prompt_loader).format(
-                task=_escape_format_value(task),
-                analyst_file=_escape_format_value(agents_dir / "analysis" / "ANALYST.md"),
-                architect_file=_escape_format_value(agents_dir / "analysis" / "ARCHITECT.md"),
-                qa_file=_escape_format_value(agents_dir / "analysis" / "QA_PLANNER.md"),
-                plan_file=_escape_format_value(plan_file),
+            _render_prompt(_get_prompt("SYNTHESIZER_PROMPT", prompt_loader),
+                task=task,
+                analyst_file=agents_dir / "analysis" / "ANALYST.md",
+                architect_file=agents_dir / "analysis" / "ARCHITECT.md",
+                qa_file=agents_dir / "analysis" / "QA_PLANNER.md",
+                plan_file=plan_file,
                 coverage=coverage,
             ),
             project_ctx,
@@ -940,18 +942,18 @@ def phase2_synthesize(
 # ─────────────────────────────────────────────
 
 IMPLEMENTER_PROMPT = """
-Eres un desarrollador senior. Implementa el plan en {plan_file}.
+Eres un desarrollador senior. Implementa el plan en {{ plan_file }}.
 
-TAREA: {task}
+TAREA: {{ task }}
 
-Lee también la arquitectura en {architect_file}.
+Lee también la arquitectura en {{ architect_file }}.
 
 Reglas:
 1. Sigue el orden exacto del plan
 2. Implementa SOLO el código fuente (no tests)
 3. Tras cada paso, ejecuta su validación
 4. Escribe código limpio con type hints
-5. Documenta en {log_file} los cambios realizados
+5. Documenta en {{ log_file }} los cambios realizados
 6. Si el entorno usa Python < 3.10, usa `from __future__ import annotations` en lugar
    de `X | Y` en type hints (o usa `Optional[X]` de typing)
 
@@ -961,12 +963,12 @@ No implementes los tests — ese es el rol de TEST_WRITER.
 TEST_WRITER_PROMPT = """
 Eres un QA Engineer senior. Escribe los tests del plan.
 
-TAREA: {task}
+TAREA: {{ task }}
 
 Lee:
-- Plan: {plan_file}
-- Plan QA: {qa_file}
-- Log del implementador: {impl_log}
+- Plan: {{ plan_file }}
+- Plan QA: {{ qa_file }}
+- Log del implementador: {{ impl_log }}
 
 Reglas:
 1. Detecta el tipo de proyecto:
@@ -974,8 +976,8 @@ Reglas:
    - Si no: escribe tests pytest (archivos test_*.py en tests/)
 2. Cubre happy path, edge cases y errores esperados
 3. Sigue el plan de QA exactamente
-4. Documenta en {log_file} los tests creados
-5. Alcanza coverage > {coverage}%
+4. Documenta en {{ log_file }} los tests creados
+5. Alcanza coverage > {{ coverage }}%
 6. Verifica ejecutando:
    - Node.js: npx jest --coverage --coverageReporters=text --forceExit
    - Python: pytest tests/ --cov=. --cov-report=term-missing -v
@@ -998,11 +1000,11 @@ def _run_implementer(
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
         _prepend_context(
-            _get_prompt("IMPLEMENTER_PROMPT", prompt_loader).format(
-                task=_escape_format_value(task),
-                plan_file=_escape_format_value(agents_dir / "PLAN.md"),
-                architect_file=_escape_format_value(agents_dir / "analysis" / "ARCHITECT.md"),
-                log_file=_escape_format_value(log_file),
+            _render_prompt(_get_prompt("IMPLEMENTER_PROMPT", prompt_loader),
+                task=task,
+                plan_file=agents_dir / "PLAN.md",
+                architect_file=agents_dir / "analysis" / "ARCHITECT.md",
+                log_file=log_file,
             ),
             project_ctx,
         ),
@@ -1023,13 +1025,13 @@ def _run_implementer(
 TEST_WRITER_PROMPT_MULTI = """
 Eres un QA Engineer senior. Escribe los tests del plan.
 
-TAREA: {task}
+TAREA: {{ task }}
 
 Lee:
-- Plan: {plan_file}
-- Plan QA: {qa_file}
+- Plan: {{ plan_file }}
+- Plan QA: {{ qa_file }}
 - Logs de implementadores:
-{impl_logs}
+{{ impl_logs }}
 
 Reglas:
 1. Detecta el tipo de proyecto:
@@ -1037,23 +1039,23 @@ Reglas:
    - Si no: escribe tests pytest (archivos test_*.py en tests/)
 2. Cubre happy path, edge cases y errores esperados
 3. Sigue el plan de QA exactamente
-4. Documenta en {log_file} los tests creados
-5. Alcanza coverage > {coverage}%
+4. Documenta en {{ log_file }} los tests creados
+5. Alcanza coverage > {{ coverage }}%
 6. Verifica ejecutando:
    - Node.js: npx jest --coverage --coverageReporters=text --forceExit
    - Python: pytest tests/ --cov=. --cov-report=term-missing -v
 """
 
 COORDINATOR_PROMPT = """
-Eres un Tech Lead coordinador. Divide el plan de implementación en {n_agents} sub-tareas independientes.
+Eres un Tech Lead coordinador. Divide el plan de implementación en {{ n_agents }} sub-tareas independientes.
 
-TAREA: {task}
+TAREA: {{ task }}
 
-Lee el plan en {plan_file}.
+Lee el plan en {{ plan_file }}.
 
-Para cada sub-tarea i (1..{n_agents}), escribe el archivo {tasks_dir}/DEV_{{i}}.md con:
+Para cada sub-tarea i (1..{{ n_agents }}), escribe el archivo {{ tasks_dir }}/DEV_{i}.md con:
 
-## Sub-tarea {{i}}/{n_agents}
+## Sub-tarea {i}/{{ n_agents }}
 
 ### Módulos a implementar
 - `ruta/archivo.py`: descripción exacta del cambio
@@ -1072,16 +1074,16 @@ Reglas de división:
 2. Cubre TODO el plan sin superposición
 3. Especifica explícitamente qué archivos NO tocar en cada sub-tarea
 
-Escribe tu log de coordinación en {log_file}.
+Escribe tu log de coordinación en {{ log_file }}.
 """
 
 DEV_AGENT_PROMPT = """
 Eres un desarrollador senior. Implementa EXCLUSIVAMENTE la sub-tarea asignada.
 
-TAREA GLOBAL: {task}
-TU SUB-TAREA: {task_file} (Dev agent {index}/{n_agents})
+TAREA GLOBAL: {{ task }}
+TU SUB-TAREA: {{ task_file }} (Dev agent {{ index }}/{{ n_agents }})
 
-Lee también la arquitectura en {architect_file}.
+Lee también la arquitectura en {{ architect_file }}.
 
 Reglas:
 1. Implementa SOLO los módulos listados en tu sub-tarea
@@ -1089,7 +1091,7 @@ Reglas:
 3. Implementa SOLO código fuente (no tests)
 4. Tras cada paso ejecuta su validación
 5. Escribe type hints y docstrings
-6. Documenta en {log_file} los cambios realizados con rutas exactas
+6. Documenta en {{ log_file }} los cambios realizados con rutas exactas
 7. Si el entorno usa Python < 3.10, usa `from __future__ import annotations` en lugar
    de `X | Y` en type hints (o usa `Optional[X]` de typing)
 """
@@ -1113,21 +1115,21 @@ def _run_test_writer(
 
     if dev_log_files:
         impl_logs_str = "\n".join(f"  - {p}" for p in dev_log_files)
-        prompt = _get_prompt("TEST_WRITER_PROMPT_MULTI", prompt_loader).format(
-            task=_escape_format_value(task),
-            plan_file=_escape_format_value(agents_dir / "PLAN.md"),
-            qa_file=_escape_format_value(agents_dir / "analysis" / "QA_PLANNER.md"),
-            impl_logs=_escape_format_value(impl_logs_str),
-            log_file=_escape_format_value(log_file),
+        prompt = _render_prompt(_get_prompt("TEST_WRITER_PROMPT_MULTI", prompt_loader),
+            task=task,
+            plan_file=agents_dir / "PLAN.md",
+            qa_file=agents_dir / "analysis" / "QA_PLANNER.md",
+            impl_logs=impl_logs_str,
+            log_file=log_file,
             coverage=coverage,
         )
     else:
-        prompt = _get_prompt("TEST_WRITER_PROMPT", prompt_loader).format(
-            task=_escape_format_value(task),
-            plan_file=_escape_format_value(agents_dir / "PLAN.md"),
-            qa_file=_escape_format_value(agents_dir / "analysis" / "QA_PLANNER.md"),
-            impl_log=_escape_format_value(agents_dir / "implementation" / "IMPLEMENTER.md"),
-            log_file=_escape_format_value(log_file),
+        prompt = _render_prompt(_get_prompt("TEST_WRITER_PROMPT", prompt_loader),
+            task=task,
+            plan_file=agents_dir / "PLAN.md",
+            qa_file=agents_dir / "analysis" / "QA_PLANNER.md",
+            impl_log=agents_dir / "implementation" / "IMPLEMENTER.md",
+            log_file=log_file,
             coverage=coverage,
         )
 
@@ -1160,12 +1162,12 @@ def _run_coordinator(
         flags += ["--resume", resume_id]
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        _get_prompt("COORDINATOR_PROMPT", prompt_loader).format(
-            task=_escape_format_value(task),
+        _render_prompt(_get_prompt("COORDINATOR_PROMPT", prompt_loader),
+            task=task,
             n_agents=n_agents,
-            plan_file=_escape_format_value(agents_dir / "PLAN.md"),
-            tasks_dir=_escape_format_value(tasks_dir),
-            log_file=_escape_format_value(log_file),
+            plan_file=agents_dir / "PLAN.md",
+            tasks_dir=tasks_dir,
+            log_file=log_file,
         ),
         flags=flags,
     )
@@ -1199,13 +1201,13 @@ def _run_dev_agent(
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
         _prepend_context(
-            _get_prompt("DEV_AGENT_PROMPT", prompt_loader).format(
-                task=_escape_format_value(task),
-                task_file=_escape_format_value(task_file),
+            _render_prompt(_get_prompt("DEV_AGENT_PROMPT", prompt_loader),
+                task=task,
+                task_file=task_file,
                 index=index,
                 n_agents=n_agents,
-                architect_file=_escape_format_value(agents_dir / "analysis" / "ARCHITECT.md"),
-                log_file=_escape_format_value(log_file),
+                architect_file=agents_dir / "analysis" / "ARCHITECT.md",
+                log_file=log_file,
             ),
             project_ctx,
         ),
@@ -1341,24 +1343,24 @@ def phase3_implement(
 INTEGRATOR_PROMPT = """
 Eres un integration engineer. Asegura que todo funcione junto.
 
-TAREA: {task}
+TAREA: {{ task }}
 
-Lee todos los logs en {agents_dir}/ y el código implementado.
+Lee todos los logs en {{ agents_dir }}/ y el código implementado.
 
-DIRECTORIO DE TRABAJO: {backend_dir}
+DIRECTORIO DE TRABAJO: {{ backend_dir }}
 Tests deben estar en: tests/
 
 Pasos:
-1. Navega a {backend_dir}
+1. Navega a {{ backend_dir }}
 2. Ejecuta los tests con cobertura:
    - Si Node.js (package.json existe): npx jest --coverage --coverageReporters=text --forceExit
    - Si Python: pytest tests/ --cov=. --cov-report=term-missing -v
 3. Si hay fallos, corrígelos
-4. Si coverage < {coverage}%, agrega más tests en tests/
-5. Repite hasta pasar o agotar {max_attempts} intentos
-6. Documenta resultados en {log_file}
+4. Si coverage < {{ coverage }}%, agrega más tests en tests/
+5. Repite hasta pasar o agotar {{ max_attempts }} intentos
+6. Documenta resultados en {{ log_file }}
 
-Objetivo: Tests pasan con coverage >= {coverage}%
+Objetivo: Tests pasan con coverage >= {{ coverage }}%
 """
 
 
@@ -1389,13 +1391,13 @@ def phase4_integrate(
     backend_dir = agents_dir.parent / "backend"
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
-        _get_prompt("INTEGRATOR_PROMPT", prompt_loader).format(
-            task=_escape_format_value(task),
-            agents_dir=_escape_format_value(agents_dir),
-            backend_dir=_escape_format_value(backend_dir),
+        _render_prompt(_get_prompt("INTEGRATOR_PROMPT", prompt_loader),
+            task=task,
+            agents_dir=agents_dir,
+            backend_dir=backend_dir,
             coverage=coverage,
             max_attempts=3,
-            log_file=_escape_format_value(log_file),
+            log_file=log_file,
         ),
         flags=flags,
     )
@@ -1423,11 +1425,11 @@ def phase4_integrate(
 COMMITTER_PROMPT = """
 Genera un mensaje de commit Conventional Commits resumido (máximo 150 palabras).
 
-TAREA: {task}
-BRANCH: {branch}
-COVERAGE: {coverage}%
+TAREA: {{ task }}
+BRANCH: {{ branch }}
+COVERAGE: {{ coverage }}%
 
-Lee el plan en {plan_file} y el reporte de integración en {integrator_log}.
+Lee el plan en {{ plan_file }} y el reporte de integración en {{ integrator_log }}.
 Usa esa información SOLO para contexto interno. NO la incluyas en la respuesta.
 
 Formato (EXACTO):
@@ -1435,7 +1437,7 @@ Formato (EXACTO):
 
 <máximo 3-4 líneas de cambios relevantes>
 
-Tests: coverage {coverage}%
+Tests: coverage {{ coverage }}%
 
 ⚠️  IMPORTANTE: Responde SOLO el mensaje de commit completo.
 SIN: explicaciones, comillas, backticks, o cualquier texto extra.
@@ -1489,11 +1491,11 @@ def phase5_commit(
         flags += ["--resume", resume_id]
 
     code, text, sid, usage = claude_p_with_session(
-        _get_prompt("COMMITTER_PROMPT", prompt_loader).format(
-            task=_escape_format_value(task),
-            branch=_escape_format_value(branch),
-            plan_file=_escape_format_value(agents_dir / "PLAN.md"),
-            integrator_log=_escape_format_value(agents_dir / "integration" / "INTEGRATOR.md"),
+        _render_prompt(_get_prompt("COMMITTER_PROMPT", prompt_loader),
+            task=task,
+            branch=branch,
+            plan_file=agents_dir / "PLAN.md",
+            integrator_log=agents_dir / "integration" / "INTEGRATOR.md",
             coverage=f"{coverage:.1f}",
         ),
         flags=flags,
