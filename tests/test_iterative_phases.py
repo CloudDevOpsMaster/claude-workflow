@@ -535,9 +535,9 @@ def test_phase5_commit_json_fallback(capsys, temp_agents_dir, session_store):
             )
 
     assert result is True
-    # Verificar que se usó el mensaje genérico (fallback)
+    # Verificar que se usó el mensaje genérico (fallback, sanitizado a lowercase)
     call_args = mock_commit.call_args[0][0]
-    assert "feat: Test task" in call_args
+    assert "feat: test task" in call_args
 
 
 def test_phase5_commit_backticks_cleanup(capsys, temp_agents_dir, session_store):
@@ -601,9 +601,9 @@ def test_phase5_commit_type_validation(capsys, temp_agents_dir, session_store):
             )
 
     assert result is True
-    # Debe usar fallback
+    # Debe usar fallback (sanitizado a lowercase)
     call_args = mock_commit.call_args[0][0]
-    assert "feat: Test task" in call_args
+    assert "feat: test task" in call_args
 
 
 def test_phase5_commit_git_failure(capsys, temp_agents_dir, session_store):

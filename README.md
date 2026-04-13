@@ -129,6 +129,7 @@ CONTROL:
   --resume SESSION_ID          Reanudar sesión pausada
   --init                       Inicializar .claude-workflow/prompts/ con archivos editables
   --prompts-dir PATH           Ruta alternativa a directorio de prompts (default: .claude-workflow/prompts/)
+  --backend-dir PATH           Ruta al directorio de tests/backend (para monorepos). Sobreescribe auto-detección en Fase 4
 
 RECURSOS:
   --workers N                  Workers paralelos en Fase 1 (default: 3)

@@ -455,10 +455,9 @@ def parse_coverage(output: str) -> float:
     return float(matches[-1]) if matches else 0.0
 
 
-def run_tests() -> tuple[bool, float, str]:
+def run_tests(cwd: "Path | None" = None) -> tuple[bool, float, str]:
     """Corre tests con coverage. Detecta pytest o Jest según el proyecto."""
-    # Usar el directorio actual (el proyecto que se está mejorando)
-    project_dir = Path.cwd()
+    project_dir = cwd if cwd is not None else Path.cwd()
 
     # Detectar tipo de proyecto
     if (project_dir / "package.json").exists():
@@ -480,6 +479,24 @@ def run_tests() -> tuple[bool, float, str]:
     coverage = parse_coverage(output)
     passed = r.returncode == 0
     return passed, coverage, output
+
+
+def _detect_test_dir(base_dir: "Path | None" = None) -> Path:
+    """Auto-detecta el directorio que contiene tests/ o conftest.py.
+
+    Busca en patrones comunes de monorepo. Retorna el primer match
+    o base_dir como fallback.
+    """
+    root = base_dir if base_dir is not None else Path.cwd()
+    # Si la raiz ya tiene tests/, no buscar mas
+    if (root / "tests").is_dir():
+        return root
+    # Patrones comunes de monorepo
+    for candidate in ("apps/backend", "backend", "src"):
+        d = root / candidate
+        if (d / "tests").is_dir() or (d / "conftest.py").is_file():
+            return d
+    return root
 
 
 def step_tests() -> bool:

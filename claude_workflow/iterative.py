@@ -1388,6 +1388,7 @@ def phase4_integrate(
     resume: bool = False,
     token_store: Optional["TokenStore"] = None,
     prompt_loader: Optional["PromptLoader"] = None,
+    backend_dir: Optional[Path] = None,
 ) -> Tuple[bool, float]:
     if 4 in skip_phases:
         print("\n⏭  Saltando Fase 4 (--skip-phase 4)")
@@ -1403,7 +1404,8 @@ def phase4_integrate(
     if resume_id:
         flags += ["--resume", resume_id]
 
-    backend_dir = agents_dir.parent / "backend"
+    if backend_dir is None:
+        backend_dir = base._detect_test_dir(agents_dir.parent)
     t0 = time.monotonic()
     code, text, sid, usage = claude_p_with_session(
         _render_prompt(_get_prompt("INTEGRATOR_PROMPT", prompt_loader),
@@ -1427,8 +1429,15 @@ def phase4_integrate(
     print(f"  {mark} INTEGRATOR — {duration:.1f}s")
 
     # Medir coverage real
-    _, cov_pct, _ = base.run_tests()
+    _, cov_pct, test_output = base.run_tests(cwd=backend_dir)
     print(f"  📈 Coverage: {cov_pct:.1f}%")
+
+    if cov_pct == 0.0:
+        print(f"  ⚠  Coverage 0% — diagnostico del test runner:")
+        print(f"  Test dir: {backend_dir}")
+        # Mostrar ultimas lineas del output para diagnostico
+        for line in test_output.splitlines()[-30:]:
+            print(f"    {line}")
 
     return code == 0, cov_pct
 
@@ -1479,6 +1488,57 @@ _PROMPT_FILES: Dict[str, tuple] = {
 }
 
 _PROMPTS_DIR = Path(".claude-workflow") / "prompts"
+
+_COMMIT_TYPE_RE = re.compile(
+    r'^(feat|fix|docs|test|refactor|chore)(\([^)]+\))?:\s*'
+)
+
+
+def _sanitize_commit_header(text: str) -> str:
+    """Sanitiza mensaje de commit para cumplir commitlint.
+
+    1. Header (primera linea) truncado a <=100 chars en word boundary
+    2. Subject en lowercase (despues de type: o type(scope):)
+    3. Remueve trailing period del header
+    4. Body limitado a 10 lineas totales
+    """
+    lines = text.split("\n")
+    header = lines[0]
+    body = lines[1:] if len(lines) > 1 else []
+
+    # Lowercase subject
+    m = _COMMIT_TYPE_RE.match(header)
+    if m:
+        prefix = m.group(0)
+        rest = header[len(prefix):]
+        if rest and rest[0].isupper():
+            rest = rest[0].lower() + rest[1:]
+        header = prefix + rest
+
+    # Remover trailing period
+    header = header.rstrip(".")
+
+    # Truncar a 100 chars en word boundary
+    if len(header) > 100:
+        prefix = m.group(0) if m else ""
+        rest = header[len(prefix):]
+        max_rest = 100 - len(prefix)
+        if len(rest) > max_rest:
+            truncated = rest[:max_rest]
+            last_space = truncated.rfind(" ")
+            if last_space > 0:
+                truncated = truncated[:last_space]
+            header = prefix + truncated
+
+    # Rearmar con body (max 10 lineas totales)
+    all_lines = [header] + body
+    if len(all_lines) > 10:
+        if "Tests:" in all_lines[-1]:
+            all_lines = all_lines[:9] + [all_lines[-1]]
+        else:
+            all_lines = all_lines[:10]
+
+    return "\n".join(all_lines)
 
 
 def phase5_commit(
@@ -1535,16 +1595,12 @@ def phase5_commit(
         lines = text.split("\n")
         text = "\n".join(l.strip("`") for l in lines if l.strip("`"))
 
-    # Validar que empiece con un tipo de commit válido
-    valid_types = ("feat:", "fix:", "docs:", "test:", "refactor:", "chore:")
-    if not text.startswith(valid_types):
+    # Validar que empiece con un tipo de commit válido (soporta scope)
+    if not _COMMIT_TYPE_RE.match(text):
         text = f"feat: {task}\n\nTests: coverage {coverage:.1f}%"
 
-    # Limitar a máximo 10 líneas para evitar mensajes excesivamente largos
-    lines = text.split("\n")
-    if len(lines) > 10:
-        # Mantener: tipo, scope, descripción + el renglón de Tests
-        text = "\n".join(lines[:9] + [lines[-1]] if "Tests:" in lines[-1] else lines[:10])
+    # Sanitizar: truncar header, lowercase, remover period, limitar lineas
+    text = _sanitize_commit_header(text)
 
     commit_file.write_text(text.strip())
     print(f"\n📝  Mensaje de commit:\n{text.strip()}\n")
@@ -1572,6 +1628,7 @@ def run(
     agents_dir: Optional[Path] = None,
     dev_agents: int = 1,
     prompt_loader: Optional["PromptLoader"] = None,
+    backend_dir: Optional[Path] = None,
 ) -> int:
     global MIN_COVERAGE
     MIN_COVERAGE = coverage
@@ -1685,9 +1742,34 @@ def run(
     ok, cov = phase4_integrate(
         task, _agents_dir, store, skip, coverage, resume=is_resume,
         token_store=token_store, prompt_loader=prompt_loader,
+        backend_dir=backend_dir,
     )
     results["integrate"] = ok
     results["coverage"] = cov
+
+    # Re-run de coverage si esta bajo el objetivo (modo interactivo)
+    _MAX_COV_RETRIES = 2
+    _cov_retry = 0
+    _cov_dir = backend_dir or base._detect_test_dir(_agents_dir.parent)
+    while (cov < coverage) and _cov_retry < _MAX_COV_RETRIES and not gate.auto:
+        print(f"\n{'─'*60}")
+        print(f"  COVERAGE RE-RUN ({_cov_retry + 1}/{_MAX_COV_RETRIES})")
+        print(f"{'─'*60}")
+        print(f"  Coverage actual: {cov:.1f}% (objetivo: {coverage}%)")
+        if cov == 0.0:
+            print(f"  ⚠  0% probablemente significa que no se encontraron tests")
+            print(f"  Directorio actual de tests: {_cov_dir}")
+        resp = input("\n  [r]e-run coverage / [d]irectorio diferente / [s]kip: ").strip().lower()
+        if resp == "s" or resp == "":
+            break
+        if resp == "d":
+            new_dir = input("  Ruta al directorio de tests: ").strip()
+            if new_dir:
+                _cov_dir = Path(new_dir).resolve()
+        _, cov, _ = base.run_tests(cwd=_cov_dir)
+        print(f"  📈 Coverage: {cov:.1f}%")
+        results["coverage"] = cov
+        _cov_retry += 1
 
     if not ok or cov < coverage:
         msg = f"Coverage: {cov:.1f}% < objetivo {coverage}%"
@@ -1911,6 +1993,8 @@ Ejemplos:
                         help="Actualizar prompts en .claude-workflow/prompts/ con los defaults del módulo (sobreescribe existentes)")
     parser.add_argument("--prompts-dir",    default="", metavar="PATH",
                         help="Ruta a directorio con .md de prompts (default: .claude-workflow/prompts/ en cwd)")
+    parser.add_argument("--backend-dir",   default="", metavar="PATH",
+                        help="Ruta al directorio de tests/backend (para monorepos). Sobreescribe auto-detección en fase 4")
     args = parser.parse_args()
 
     # ── Manejar --init y --update-prompts ──
@@ -1962,6 +2046,7 @@ Ejemplos:
             dry_run=args.dry_run,
             dev_agents=args.dev_agents,
             prompt_loader=prompt_loader,
+            backend_dir=Path(args.backend_dir).resolve() if args.backend_dir else None,
         )
     except KeyboardInterrupt:
         print("\n⚠  Interrumpido por el usuario.")
