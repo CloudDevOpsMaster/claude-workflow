@@ -12,8 +12,16 @@ import re
 import argparse
 import threading
 from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Callable
+from datetime import datetime, timedelta, timezone
+from typing import Callable, Optional
+
+from claude_workflow.cli_backend import (
+    CLIBackend,
+    CLIResult,
+    FallbackBackend,
+    get_default_backend,
+    is_token_exhausted,
+)
 
 # ─────────────────────────────────────────────
 # Config
@@ -76,25 +84,12 @@ def _delete_branch(branch: str) -> None:
 
 
 # ─────────────────────────────────────────────
-# Opencode fallback helpers
+# Token exhaustion helpers (using cli_backend)
 # ─────────────────────────────────────────────
 
 def _is_token_exhausted(exit_code: int, output: str) -> bool:
-    """Detecta si un fallo de Claude CLI se debe a context window exceeded."""
-    if exit_code == 0:
-        return False
-    _PATTERNS = [
-        "context length exceeded",
-        "context_length_exceeded",
-        "context window",
-        "token limit",
-        "too long",
-        "max_tokens",
-        "exceeds the",
-        "prompt is too long",
-    ]
-    output_lower = output.lower()
-    return any(p in output_lower for p in _PATTERNS)
+    """Detecta si un fallo de CLI se debe a context window exceeded."""
+    return is_token_exhausted(exit_code, output)
 
 
 def _append_token_log(entry: dict) -> None:
@@ -124,7 +119,7 @@ def _schedule_token_reset(
         try:
             reset_entry = {
                 "event": "reset_triggered",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "step": step,
                 "original_exhausted_at": exhausted_at,
             }
@@ -152,7 +147,7 @@ def _handle_token_exhaustion(
     delay_s: float = TOKEN_RESET_SECS,
 ) -> threading.Timer:
     """Maneja agotamiento de tokens: registra el evento y agenda reset."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     reset_at = now + timedelta(seconds=delay_s)
 
     entry = {
@@ -171,57 +166,50 @@ def _handle_token_exhaustion(
 
 
 # ─────────────────────────────────────────────
-# Claude helpers
+# Claude helpers (using cli_backend)
 # ─────────────────────────────────────────────
 
+# Global backend instance (lazy initialized)
+_backend: Optional[CLIBackend] = None
+
+
+def _get_backend() -> CLIBackend:
+    """Obtiene el backend CLI (con fallback automático)."""
+    global _backend
+    if _backend is None:
+        _backend = get_default_backend()
+    return _backend
+
+
 def claude_p(prompt: str, flags: list[str] = None, step: str = "unknown") -> tuple[int, str, dict]:
-    """Corre claude -p, captura output completo. Retorna (exit_code, text, usage)."""
-    cmd = ["claude", "-p", prompt, "--output-format", "json"] + (flags or [])
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    output = r.stdout.strip()
-    usage: dict = {}
-    try:
-        data = json.loads(output)
-        text = data.get("result", output)
-        u = data.get("usage", {})
-        usage = {
-            "input":       u.get("input_tokens", 0),
-            "output":      u.get("output_tokens", 0),
-            "cache_read":  u.get("cache_read_input_tokens", 0),
-            "cache_write": u.get("cache_creation_input_tokens", 0),
-            "cost_usd":    data.get("total_cost_usd", 0.0),
-            "duration_ms": data.get("duration_ms", 0),
-        }
-    except (json.JSONDecodeError, AttributeError):
-        text = output
+    """Corre CLI con fallback automático. Retorna (exit_code, text, usage)."""
+    backend = _get_backend()
+    result = backend.execute(prompt, flags, step)
 
-    if _is_token_exhausted(r.returncode, r.stderr + output):
-        _handle_token_exhaustion(step=step, caller="claude_p", error_text=(r.stderr + output)[:500])
+    if result.token_exhausted:
+        _handle_token_exhaustion(step=step, caller="claude_p", error_text=result.text[:500])
 
-    return r.returncode, text, usage
+    return result.exit_code, result.text, result.usage
 
 
 def claude_stream(prompt: str, flags: list[str] = None, step: str = "unknown") -> tuple[int, list]:
-    """Corre claude -p con stream-json, imprime en tiempo real."""
-    cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"] + (flags or [])
-    events = []
-    raw_lines = []
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    for line in proc.stdout:
-        line = line.strip()
-        if line:
-            print(line)
-            raw_lines.append(line)
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
-    proc.wait()
+    """Corre CLI con stream-json y fallback automático."""
+    backend = _get_backend()
+    events: list = []
 
-    if _is_token_exhausted(proc.returncode, "\n".join(raw_lines)):
-        _handle_token_exhaustion(step=step, caller="claude_stream", error_text="\n".join(raw_lines)[:500])
+    def on_line(line: str) -> None:
+        print(line)
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
 
-    return proc.returncode, events
+    result = backend.execute_stream(prompt, flags, step, on_line)
+
+    if result.token_exhausted:
+        _handle_token_exhaustion(step=step, caller="claude_stream", error_text=result.text[:500])
+
+    return result.exit_code, events
 
 
 # ─────────────────────────────────────────────

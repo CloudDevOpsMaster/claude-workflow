@@ -402,3 +402,19 @@ def reset_auto_mode():
     original_auto_mode = iterative._AUTO_MODE
     yield
     iterative._AUTO_MODE = original_auto_mode
+
+
+@pytest.fixture(autouse=True)
+def reset_cli_backend():
+    """
+    Reset CLI backend singletons después de cada test para evitar
+    estado compartido entre tests.
+    """
+    from claude_workflow import cli_backend as cb
+    from claude_workflow import plan_exec as pe
+
+    yield
+
+    # Reset global backend singletons
+    cb.reset_default_backend()
+    pe._backend = None

@@ -1509,19 +1509,19 @@ def test_handle_token_exhaustion_writes_log(tmp_path, monkeypatch):
 
 def test_handle_token_exhaustion_reset_at_is_future(tmp_path, monkeypatch):
     """_handle_token_exhaustion establece reset_at en el futuro."""
-    import time
+    from datetime import datetime, timedelta, timezone
     monkeypatch.chdir(tmp_path)
     
-    before = __import__('datetime').datetime.utcnow()
+    before = datetime.now(timezone.utc)
     timer = pe._handle_token_exhaustion("test", "claude_p", "error", delay_s=100)
     
     try:
         data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
         reset_at_str = data[0]["reset_at"]
-        reset_at = __import__('datetime').datetime.fromisoformat(reset_at_str)
+        reset_at = datetime.fromisoformat(reset_at_str)
         
         # reset_at debería ser aproximadamente now + 100 segundos (tolerancia: ±5 segundos)
-        expected = before + __import__('datetime').timedelta(seconds=100)
+        expected = before + timedelta(seconds=100)
         diff = abs((reset_at - expected).total_seconds())
         assert diff < 5, f"reset_at muy lejano: diff={diff}s"
     finally:
@@ -1559,11 +1559,16 @@ def test_claude_p_token_exhausted_writes_log(tmp_path, monkeypatch):
     """claude_p escribe log cuando token está exhausted."""
     monkeypatch.chdir(tmp_path)
     
-    with patch("subprocess.run") as mock_run:
+    # Reset backend and mock subprocess.run at the cli_backend level
+    from claude_workflow import cli_backend as cb
+    cb.reset_default_backend()
+    pe._backend = None  # Reset plan_exec's cached backend
+    
+    with patch("claude_workflow.cli_backend.subprocess.run") as mock_run:
         mock_run.return_value = Mock(
             returncode=1,
-            stdout="error",
-            stderr="context length exceeded"
+            stdout="context length exceeded",
+            stderr=""
         )
         
         code, text, usage = pe.claude_p("test", step="plan")
@@ -1575,13 +1580,21 @@ def test_claude_p_token_exhausted_writes_log(tmp_path, monkeypatch):
         entry = next(e for e in data if e.get("event") == "token_exhausted")
         assert entry["step"] == "plan"
         assert entry["caller"] == "claude_p"
+    
+    # Cleanup
+    cb.reset_default_backend()
+    pe._backend = None
 
 
 def test_claude_p_success_no_log(tmp_path, monkeypatch):
     """claude_p no crea log cuando tiene éxito."""
     monkeypatch.chdir(tmp_path)
     
-    with patch("subprocess.run") as mock_run:
+    from claude_workflow import cli_backend as cb
+    cb.reset_default_backend()
+    pe._backend = None
+    
+    with patch("claude_workflow.cli_backend.subprocess.run") as mock_run:
         mock_run.return_value = Mock(
             returncode=0,
             stdout='{"result": "output", "usage": {}}',
@@ -1592,34 +1605,48 @@ def test_claude_p_success_no_log(tmp_path, monkeypatch):
         
         assert code == 0
         assert not Path(pe.TOKEN_LIMIT_LOG).exists()
+    
+    cb.reset_default_backend()
+    pe._backend = None
 
 
 def test_claude_p_generic_error_no_log(tmp_path, monkeypatch):
     """claude_p no crea log para errores genéricos."""
     monkeypatch.chdir(tmp_path)
     
-    with patch("subprocess.run") as mock_run:
+    from claude_workflow import cli_backend as cb
+    cb.reset_default_backend()
+    pe._backend = None
+    
+    with patch("claude_workflow.cli_backend.subprocess.run") as mock_run:
         mock_run.return_value = Mock(
             returncode=1,
-            stdout="error",
-            stderr="connection refused"
+            stdout="connection refused",
+            stderr=""
         )
         
         code, text, usage = pe.claude_p("test")
         
         assert code == 1
         assert not Path(pe.TOKEN_LIMIT_LOG).exists()
+    
+    cb.reset_default_backend()
+    pe._backend = None
 
 
 def test_claude_p_step_defaults_to_unknown(tmp_path, monkeypatch):
     """claude_p sin step= usa 'unknown'."""
     monkeypatch.chdir(tmp_path)
     
-    with patch("subprocess.run") as mock_run:
+    from claude_workflow import cli_backend as cb
+    cb.reset_default_backend()
+    pe._backend = None
+    
+    with patch("claude_workflow.cli_backend.subprocess.run") as mock_run:
         mock_run.return_value = Mock(
             returncode=1,
-            stdout="",
-            stderr="context window exceeded"
+            stdout="context window exceeded",
+            stderr=""
         )
         
         code, text, usage = pe.claude_p("test")  # sin step=
@@ -1627,13 +1654,20 @@ def test_claude_p_step_defaults_to_unknown(tmp_path, monkeypatch):
         data = json.loads(Path(pe.TOKEN_LIMIT_LOG).read_text())
         entry = data[0]
         assert entry["step"] == "unknown"
+    
+    cb.reset_default_backend()
+    pe._backend = None
 
 
 def test_claude_stream_token_exhausted_writes_log(tmp_path, monkeypatch):
     """claude_stream escribe log cuando token está exhausted."""
     monkeypatch.chdir(tmp_path)
     
-    with patch("subprocess.Popen") as mock_popen:
+    from claude_workflow import cli_backend as cb
+    cb.reset_default_backend()
+    pe._backend = None
+    
+    with patch("claude_workflow.cli_backend.subprocess.Popen") as mock_popen:
         mock_proc = MagicMock()
         mock_proc.stdout = ["line1", "error: context window exceeded"]
         mock_proc.returncode = 1
@@ -1647,6 +1681,9 @@ def test_claude_stream_token_exhausted_writes_log(tmp_path, monkeypatch):
         entry = next(e for e in data if e.get("event") == "token_exhausted")
         assert entry["step"] == "exec"
         assert entry["caller"] == "claude_stream"
+    
+    cb.reset_default_backend()
+    pe._backend = None
 
 
 def test_claude_stream_success_no_log(tmp_path, monkeypatch):

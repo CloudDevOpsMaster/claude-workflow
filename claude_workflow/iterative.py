@@ -28,6 +28,16 @@ from jinja2 import Template
 
 # Importar utilidades de plan_exec
 from claude_workflow import plan_exec as base
+from claude_workflow.cli_backend import (
+    CLIBackend,
+    CLIResult,
+    FallbackBackend,
+    ClaudeCLI,
+    CursorCLI,
+    get_default_backend,
+    reset_default_backend,
+    set_default_backend,
+)
 
 # ─────────────────────────────────────────────
 # Config global
@@ -495,41 +505,33 @@ class CheckpointGate:
 
 
 # ─────────────────────────────────────────────
-# Claude helper con session_id
+# Claude helper con session_id (using cli_backend)
 # ─────────────────────────────────────────────
+
+# Global backend instance for iterative (lazy initialized)
+_iterative_backend: Optional[CLIBackend] = None
+
+
+def _get_iterative_backend() -> CLIBackend:
+    """Obtiene el backend CLI para iterative (con fallback automático)."""
+    global _iterative_backend
+    if _iterative_backend is None:
+        _iterative_backend = get_default_backend()
+    return _iterative_backend
+
 
 def claude_p_with_session(
     prompt: str,
     flags: Optional[List[str]] = None,
 ) -> Tuple[int, str, Optional[str], dict]:
     """
-    Corre claude -p con --output-format json.
+    Corre CLI con fallback automático.
     Retorna (exit_code, text_output, session_id | None, usage_dict).
     """
-    cmd = ["claude", "-p", prompt, "--output-format", "json"] + (flags or [])
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    raw = r.stdout.strip()
-    session_id: Optional[str] = None
-    text = raw
-    usage: dict = {}
+    backend = _get_iterative_backend()
+    result = backend.execute(prompt, flags)
 
-    try:
-        data = json.loads(raw)
-        text = data.get("result", raw)
-        session_id = data.get("session_id") or data.get("sessionId")
-        u = data.get("usage", {})
-        usage = {
-            "input":       u.get("input_tokens", 0),
-            "output":      u.get("output_tokens", 0),
-            "cache_read":  u.get("cache_read_input_tokens", 0),
-            "cache_write": u.get("cache_creation_input_tokens", 0),
-            "cost_usd":    data.get("total_cost_usd", 0.0),
-            "duration_ms": data.get("duration_ms", 0),
-        }
-    except (json.JSONDecodeError, AttributeError):
-        pass
-
-    return r.returncode, text, session_id, usage
+    return result.exit_code, result.text, result.session_id, result.usage
 
 
 def make_session_id(task: str, ts: Optional[str] = None) -> str:
@@ -1995,6 +1997,12 @@ Ejemplos:
                         help="Ruta a directorio con .md de prompts (default: .claude-workflow/prompts/ en cwd)")
     parser.add_argument("--backend-dir",   default="", metavar="PATH",
                         help="Ruta al directorio de tests/backend (para monorepos). Sobreescribe auto-detección en fase 4")
+    parser.add_argument("--cursor-fallback", action="store_true", default=True, dest="cursor_fallback",
+                        help="Habilitar fallback a Cursor CLI cuando Claude agota tokens (default: True)")
+    parser.add_argument("--no-cursor-fallback", action="store_false", dest="cursor_fallback",
+                        help="Deshabilitar fallback a Cursor CLI")
+    parser.add_argument("--prefer-cursor", action="store_true", default=False,
+                        help="Usar Cursor CLI como backend primario (fallback a Claude CLI)")
     args = parser.parse_args()
 
     # ── Manejar --init y --update-prompts ──
@@ -2020,6 +2028,21 @@ Ejemplos:
 
     MIN_COVERAGE = args.coverage
     _AUTO_MODE = args.auto
+
+    # Configurar backend CLI
+    if args.prefer_cursor:
+        primary = CursorCLI()
+        fallback = ClaudeCLI()
+    else:
+        primary = ClaudeCLI()
+        fallback = CursorCLI()
+
+    if args.cursor_fallback:
+        backend = FallbackBackend(primary, fallback, auto_switch=True)
+    else:
+        backend = primary
+
+    set_default_backend(backend)
 
     if args.dev_agents > 1 and args.parallel_impl:
         print("Nota: --parallel-impl es ignorado cuando --dev-agents > 1")
