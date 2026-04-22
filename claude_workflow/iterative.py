@@ -439,24 +439,39 @@ class ParallelRunner:
                 executor.submit(self._run_with_retry, role, fn): role
                 for role, fn in tasks
             }
-            for future in concurrent.futures.as_completed(
-                future_to_role, timeout=self.timeout_s
-            ):
-                role = future_to_role[future]
-                try:
-                    results[role] = future.result(timeout=self.timeout_s)
-                except concurrent.futures.TimeoutError:
-                    results[role] = AgentResult(
-                        role=role, exit_code=1, output="",
-                        session_id=None, duration_s=self.timeout_s,
-                        error="timeout"
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    results[role] = AgentResult(
-                        role=role, exit_code=1, output="",
-                        session_id=None, duration_s=0.0,
-                        error=str(exc)
-                    )
+            try:
+                for future in concurrent.futures.as_completed(
+                    future_to_role, timeout=self.timeout_s
+                ):
+                    role = future_to_role[future]
+                    try:
+                        results[role] = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        results[role] = AgentResult(
+                            role=role, exit_code=1, output="",
+                            session_id=None, duration_s=0.0,
+                            error=str(exc)
+                        )
+            except concurrent.futures.TimeoutError:
+                for future, role in future_to_role.items():
+                    if role in results:
+                        continue
+                    if future.done():
+                        try:
+                            results[role] = future.result()
+                        except Exception as exc:  # noqa: BLE001
+                            results[role] = AgentResult(
+                                role=role, exit_code=1, output="",
+                                session_id=None, duration_s=0.0,
+                                error=str(exc)
+                            )
+                    else:
+                        future.cancel()
+                        results[role] = AgentResult(
+                            role=role, exit_code=1, output="",
+                            session_id=None, duration_s=float(self.timeout_s),
+                            error="timeout"
+                        )
 
         return results
 

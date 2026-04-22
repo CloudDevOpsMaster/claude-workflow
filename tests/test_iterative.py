@@ -336,6 +336,43 @@ def test_parallel_runner_run_parallel_success():
     assert results[ci.AgentRole.ARCHITECT].success
 
 
+def test_parallel_runner_run_parallel_timeout_marks_unfinished():
+    """When as_completed times out, unfinished futures should be marked 'timeout' instead of crashing."""
+    import time
+
+    runner = ci.ParallelRunner(max_workers=2, timeout_s=1, max_retries=0)
+
+    def fast_task():
+        return ci.AgentResult(
+            role=ci.AgentRole.ANALYST,
+            exit_code=0,
+            output="done",
+            session_id="sess1",
+            duration_s=0.01,
+        )
+
+    def slow_task():
+        time.sleep(5)
+        return ci.AgentResult(
+            role=ci.AgentRole.ARCHITECT,
+            exit_code=0,
+            output="never",
+            session_id="sess2",
+            duration_s=5.0,
+        )
+
+    tasks = [
+        (ci.AgentRole.ANALYST, fast_task),
+        (ci.AgentRole.ARCHITECT, slow_task),
+    ]
+
+    results = runner.run_parallel(tasks)
+    assert len(results) == 2
+    assert results[ci.AgentRole.ANALYST].success
+    assert not results[ci.AgentRole.ARCHITECT].success
+    assert results[ci.AgentRole.ARCHITECT].error == "timeout"
+
+
 def test_parallel_runner_run_with_retry_success():
     """ParallelRunner should succeed on first attempt if successful."""
     runner = ci.ParallelRunner(max_workers=1, timeout_s=5, max_retries=2)
