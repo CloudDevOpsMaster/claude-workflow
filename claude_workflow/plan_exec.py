@@ -443,25 +443,39 @@ def parse_coverage(output: str) -> float:
     return float(matches[-1]) if matches else 0.0
 
 
+def _detect_node_test_cmd(project_dir: "Path") -> list:
+    """Detecta el test runner del proyecto Node.js y retorna el comando."""
+    pkg = project_dir / "package.json"
+    if pkg.exists():
+        import json
+        try:
+            data = json.loads(pkg.read_text())
+            deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+            if "vitest" in deps:
+                return ["npm", "test", "--", "--run", "--coverage"]
+        except (json.JSONDecodeError, OSError):
+            pass
+    return ["npm", "test", "--", "--coverage", "--coverageReporters=text", "--forceExit"]
+
+
 def run_tests(cwd: "Path | None" = None) -> tuple[bool, float, str]:
-    """Corre tests con coverage. Detecta pytest o Jest según el proyecto."""
+    """Corre tests con coverage. Detecta pytest o Jest/vitest según el proyecto."""
     project_dir = cwd if cwd is not None else Path.cwd()
 
-    # Detectar tipo de proyecto
-    if (project_dir / "package.json").exists():
-        # Node.js project — usar Jest
-        r = subprocess.run(
-            ["npx", "jest", "--coverage", "--coverageReporters=text", "--forceExit"],
-            capture_output=True, text=True,
-            cwd=str(project_dir)
-        )
-    else:
-        # Python project — usar pytest
-        r = subprocess.run(
-            [sys.executable, "-m", "pytest", "tests/", "--cov=.", "--cov-report=term-missing", "-v"],
-            capture_output=True, text=True,
-            cwd=str(project_dir)
-        )
+    try:
+        if (project_dir / "package.json").exists():
+            cmd = _detect_node_test_cmd(project_dir)
+            r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(project_dir))
+        else:
+            r = subprocess.run(
+                [sys.executable, "-m", "pytest", "tests/", "--cov=.", "--cov-report=term-missing", "-v"],
+                capture_output=True, text=True,
+                cwd=str(project_dir)
+            )
+    except (FileNotFoundError, OSError) as e:
+        msg = f"⚠  test runner no encontrado: {e} — verifica que node/npm estén en PATH"
+        print(msg)
+        return False, 0.0, msg
 
     output = r.stdout + r.stderr
     coverage = parse_coverage(output)
