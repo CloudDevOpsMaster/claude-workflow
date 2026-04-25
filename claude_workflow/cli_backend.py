@@ -127,10 +127,20 @@ class ClaudeCLI:
         prompt: str,
         flags: Optional[List[str]] = None,
         step: str = "unknown",
+        timeout: int = 600,
     ) -> CLIResult:
         """Ejecuta claude -p con output JSON."""
         cmd = ["claude", "-p", prompt, "--output-format", "json"] + (flags or [])
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return CLIResult(
+                exit_code=1,
+                text=f"timeout: claude CLI no respondió en {timeout}s",
+                usage={},
+                session_id=None,
+                backend=self.name,
+            )
 
         output = r.stdout.strip()
         session_id: Optional[str] = None
