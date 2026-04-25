@@ -9,3 +9,4 @@ htmlcov/
 agents/
 sessions.json
 tokens.json
+.DS_Store

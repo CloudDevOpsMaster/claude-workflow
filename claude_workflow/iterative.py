@@ -46,7 +46,7 @@ from claude_workflow.cli_backend import (
 AGENTS_DIR = Path("agents")
 MIN_COVERAGE = 80
 DEFAULT_WORKERS = 3
-DEFAULT_TIMEOUT = 300
+DEFAULT_TIMEOUT = 600
 DEFAULT_RETRIES = 2
 
 # Modo automático (sin prompts interactivos)
