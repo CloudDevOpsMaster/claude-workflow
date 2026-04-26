@@ -1355,17 +1355,21 @@ def phase3_implement(
                 AgentRole.TEST_WRITER: tw_result,
             }
 
-        all_ok = True
+        implementer_ok = True
         for role, result in results.items():
             mark = "✅" if result.success else "❌"
             role_name = role.value if hasattr(role, "value") else str(role)
             print(f"  {mark} {role_name} — {result.duration_s:.1f}s")
             if result.session_id:
                 store.save(role, result.session_id)  # type: ignore[arg-type]
-            if not result.success:
-                all_ok = False
+            # Only IMPLEMENTER failure blocks Phase 4 — TEST_WRITER failure is
+            # recoverable: INTEGRATOR runs tests and fills coverage gaps.
+            if role == AgentRole.IMPLEMENTER and not result.success:
+                implementer_ok = False
+            elif role != AgentRole.IMPLEMENTER and not result.success:
+                print(f"  ⚠  {role_name} falló — INTEGRATOR cubrirá los tests faltantes")
 
-        return all_ok
+        return implementer_ok
 
 
 # ─────────────────────────────────────────────

@@ -127,7 +127,7 @@ class ClaudeCLI:
         prompt: str,
         flags: Optional[List[str]] = None,
         step: str = "unknown",
-        timeout: int = 600,
+        timeout: int = 1200,
     ) -> CLIResult:
         """Ejecuta claude -p con output JSON."""
         cmd = ["claude", "-p", prompt, "--output-format", "json"] + (flags or [])
