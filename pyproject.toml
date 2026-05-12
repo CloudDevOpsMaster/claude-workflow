@@ -13,6 +13,7 @@ dependencies = ["jinja2>=3.0"]
 claude-iterative = "claude_workflow.iterative:main"
 claude-plan-exec  = "claude_workflow.plan_exec:main"
 claude-multi     = "claude_workflow.multi:main"
+agent            = "claude_workflow.agent_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["claude_workflow"]
